@@ -126,7 +126,7 @@
     $appOnly = $conn.AuthMode -eq 'AppOnly'
     $spClientId = if ($PnPClientId) { $PnPClientId } elseif ($conn.PnPClientId) { $conn.PnPClientId } elseif ($appOnly) { $conn.ClientId } else { $null }
     if ($IncludeSharePoint -and -not $spClientId) {
-        throw "-IncludeSharePoint requires a dedicated Entra app for PnP (-PnPClientId). Create one: Register-PnPEntraIDAppForInteractiveLogin -ApplicationName 'PnP-TeamsAccess' -Tenant <tenant>.onmicrosoft.com -SharePointDelegatePermissions AllSites.FullControl"
+        throw '-IncludeSharePoint with delegated sign-in needs a PnP app (-PnPClientId). Create it once with: New-TeamsAccessReportPnPApp -ProfileName <profile> (or -Tenant <tenant>), or use app-only.'
     }
     if ($IncludeUserAssociations -and -not $appOnly) { Write-Warning '-IncludeUserAssociations requires app-only (delegated only supports "me"). The step is skipped.' }
     $interactive = -not $Resume -and -not $TeamId -and -not $AllTeams

@@ -4,7 +4,7 @@
 
 Describe 'Module surface' {
     It 'exports the report command and the profile commands' {
-        (Get-Command -Module TeamsAccessReport).Name | Sort-Object | Should -Be @('Get-TeamsAccessReportProfile', 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile')
+        (Get-Command -Module TeamsAccessReport).Name | Sort-Object | Should -Be @('Get-TeamsAccessReportProfile', 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportPnPApp', 'New-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile')
     }
     It 'has no mandatory parameters (everything missing is asked for or resolved)' {
         @((Get-Command Invoke-TeamsAccessReport).Parameters.Values | Where-Object { $_.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory } }).Count | Should -Be 0
@@ -732,6 +732,112 @@ Describe 'Check-box list (Windows Forms)' -Skip:(-not $IsWindows) {
             $ui = New-TarStartForm -Certificates $c
             try { $ui.Certificate.Items[0] | Should -Be 'TeamsAccessReport-Test  (expires 2027-11-05, CurrentUser\My)'; $ui.Certificate.DropDownWidth | Should -BeGreaterOrEqual 560 }
             finally { $ui.Form.Dispose() }
+        }
+    }
+}
+
+Describe 'PnP app for delegated SharePoint' {
+    BeforeAll { $env:TEAMSACCESSREPORT_PROFILE_PATH = Join-Path $TestDrive 'pnp.json' }
+    AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    It 'guide text explains why, what happens, least privilege and requirements' {
+        $t = InModuleScope TeamsAccessReport { Get-TarPnPGuideText -Tenant 'etherlinked.onmicrosoft.com' -PnPInstalled $true }
+        $t | Should -Match '9 September 2024'; $t | Should -Match 'ONE delegated permission: SharePoint AllSites.FullControl'
+        $t | Should -Match 'http://localhost'; $t | Should -Match 'Application Administrator'; $t | Should -Not -Match 'NOT installed'
+        InModuleScope TeamsAccessReport { Get-TarPnPGuideText -Tenant 't' -PnPInstalled $false } | Should -Match 'Install-Module PnP.PowerShell'
+    }
+    It 'fails clearly when PnP.PowerShell is missing' {
+        InModuleScope TeamsAccessReport { Mock Test-TarPnPInstalled { $false }; { New-TarPnPApp -Tenant 't' -Confirm:$false } | Should -Throw -ExpectedMessage '*Install-Module PnP.PowerShell*' }
+    }
+    It 'returns the client ID written by the worker and cleans up the result file' {
+        InModuleScope TeamsAccessReport {
+            Mock Test-TarPnPInstalled { $true }; Mock Write-TarLog { }
+            Mock Invoke-TarPnPRegistrationWorker { $script:lastResult = $ResultPath; '{"ok":true,"clientId":"AAAAAAAA-0000-0000-0000-000000000009"}' | Set-Content $ResultPath }
+            New-TarPnPApp -Tenant 't' -Confirm:$false | Should -Be 'aaaaaaaa-0000-0000-0000-000000000009'
+            Test-Path $script:lastResult | Should -BeFalse
+        }
+    }
+    It 'reports <Name>' -ForEach @(
+        @{ Name = 'a worker error'; Json = '{"ok":false,"error":"Insufficient privileges"}'; Pattern = '*registration failed: Insufficient privileges*' }
+        @{ Name = 'a closed window'; Json = $null; Pattern = '*closed before it finished*' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ json = $Json; pattern = $Pattern } {
+            Mock Test-TarPnPInstalled { $true }; Mock Write-TarLog { }
+            Mock Invoke-TarPnPRegistrationWorker { if ($json) { $json | Set-Content $ResultPath } }
+            { New-TarPnPApp -Tenant 't' -Confirm:$false } | Should -Throw -ExpectedMessage $pattern
+        }
+    }
+    It 'New-TeamsAccessReportPnPApp stores the ID in the profile and keeps its options' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }
+            Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'd' -TenantId 't1' -TenantQuery 'd.onmicrosoft.com' -AuthMode Delegated -Options @{ IncludeSharePoint = $true })
+            Mock New-TarPnPApp { 'bbbbbbbb-0000-0000-0000-000000000001' }
+        }
+        New-TeamsAccessReportPnPApp -ProfileName d -InformationAction SilentlyContinue | Should -Be 'bbbbbbbb-0000-0000-0000-000000000001'
+        Should -Invoke -ModuleName TeamsAccessReport New-TarPnPApp -ParameterFilter { $Tenant -eq 'd.onmicrosoft.com' }
+        $p = Get-TeamsAccessReportProfile -Name d
+        $p.PnPClientId | Should -Be 'bbbbbbbb-0000-0000-0000-000000000001'; $p.Options.IncludeSharePoint | Should -BeTrue
+    }
+}
+
+Describe 'Worker/Register-PnPApp.ps1 (separate process, fake PnP module)' {
+    BeforeAll {
+        $script:mods = Join-Path $TestDrive 'mods'
+        $dir = Join-Path $script:mods 'PnP.PowerShell'
+        $null = New-Item -ItemType Directory -Path $dir -Force
+        Set-Content (Join-Path $dir 'PnP.PowerShell.psm1') @'
+function Register-PnPEntraIDAppForInteractiveLogin {
+    param($ApplicationName, $Tenant, [string[]]$SharePointDelegatePermissions)
+    if ($Tenant -eq 'fail.onmicrosoft.com') { throw 'Insufficient privileges to complete the operation.' }
+    if ($SharePointDelegatePermissions -ne 'AllSites.FullControl') { throw 'unexpected permissions' }
+    $o = [pscustomobject]@{}; $o | Add-Member -NotePropertyName 'AzureAppId/ClientId' -NotePropertyValue 'cccccccc-0000-0000-0000-000000000003'; $o
+}
+'@
+        $script:worker = Join-Path $PSScriptRoot '..' 'Worker' 'Register-PnPApp.ps1'
+        $script:pwsh = (Get-Process -Id $PID).Path
+        function Invoke-Worker { param($Tenant)
+            $out = Join-Path $TestDrive "r-$([guid]::NewGuid()).json"
+            $old = $env:PSModulePath
+            try { $env:PSModulePath = $script:mods + [IO.Path]::PathSeparator + $old; $null = & $script:pwsh -NoProfile -File $script:worker -Tenant $Tenant -ApplicationName 'X' -ResultPath $out 2>&1 }
+            finally { $env:PSModulePath = $old }
+            Get-Content $out -Raw | ConvertFrom-Json
+        }
+    }
+    It 'extracts the client ID from the AzureAppId/ClientId property and requests only AllSites.FullControl' {
+        $r = Invoke-Worker -Tenant 'ok.onmicrosoft.com'
+        $r.ok | Should -BeTrue; $r.clientId | Should -Be 'cccccccc-0000-0000-0000-000000000003'
+    }
+    It 'writes the error when registration fails' {
+        $r = Invoke-Worker -Tenant 'fail.onmicrosoft.com'
+        $r.ok | Should -BeFalse; $r.error | Should -Match 'Insufficient privileges'
+    }
+}
+
+Describe 'PnP controls in the start window (Windows Forms)' -Skip:(-not $IsWindows) {
+    BeforeAll { InModuleScope TeamsAccessReport { Add-Type -AssemblyName System.Windows.Forms, System.Drawing } }
+    It 'hint follows sign-in method, SharePoint choice and filled ID' {
+        InModuleScope TeamsAccessReport {
+            $ui = New-TarStartForm
+            try {
+                $ui.PnPHint.Text | Should -Match 'Not needed for app-only'
+                $ui.Delegated.Checked = $true; $ui.SharePoint.Checked = $true; Update-TarStartFormState -Ui $ui
+                $ui.PnPHint.Text | Should -Match "Required.*Create"
+                $ui.PnPClientId.Text = 'x'; Update-TarStartFormState -Ui $ui
+                $ui.PnPHint.Text | Should -Match 'Used for SharePoint'
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'Create without a tenant asks for the tenant first' {
+        InModuleScope TeamsAccessReport {
+            $ui = New-TarStartForm
+            try { Invoke-TarStartFormPnPCreate -Ui $ui; $ui.Error.Text | Should -Be 'Enter the tenant first.' } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'guide window disables Create when PnP.PowerShell is missing' {
+        InModuleScope TeamsAccessReport {
+            $g = New-TarPnPGuideForm -Tenant 't' -PnPInstalled $false
+            try { $g.Create.Enabled | Should -BeFalse; $g.Text.Text | Should -Match 'NOT installed' } finally { $g.Form.Dispose() }
+            $g = New-TarPnPGuideForm -Tenant 't' -PnPInstalled $true
+            try { $g.Create.Enabled | Should -BeTrue } finally { $g.Form.Dispose() }
         }
     }
 }

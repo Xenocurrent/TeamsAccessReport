@@ -100,7 +100,10 @@ function New-TarStartForm {
     $ui.Certificate.DropDownWidth = [Math]::Max($textWidth, 560)
     Add-TarFormRow $tc 'Certificate' $ui.Certificate
     $ui.PnPClientId = [System.Windows.Forms.TextBox]@{ Width = $textWidth }
-    Add-TarFormRow $tc 'PnP app ID (optional)' $ui.PnPClientId
+    $ui.PnPCreate = [System.Windows.Forms.Button]@{ Text = 'Create...'; AutoSize = $true }
+    Add-TarFormRow $tc 'PnP app ID' $ui.PnPClientId $ui.PnPCreate
+    $ui.PnPHint = [System.Windows.Forms.Label]@{ AutoSize = $true; MaximumSize = [System.Drawing.Size]::new($textWidth + 100, 0); ForeColor = [System.Drawing.SystemColors]::GrayText }
+    Add-TarFormRow $tc '' $ui.PnPHint
     $saveRow = [System.Windows.Forms.FlowLayoutPanel]@{ AutoSize = $true; WrapContents = $false; Margin = [System.Windows.Forms.Padding]::new(0) }
     $ui.Save = [System.Windows.Forms.CheckBox]@{ Text = 'Save as profile'; AutoSize = $true; Checked = $true }
     $ui.ProfileName = [System.Windows.Forms.TextBox]@{ Width = 200 }
@@ -138,6 +141,8 @@ function New-TarStartForm {
     $ui.AppOnly.Add_CheckedChanged({ Update-TarStartFormState -Ui (Get-TarFormUi $this) })
     $ui.Save.Add_CheckedChanged({ Update-TarStartFormState -Ui (Get-TarFormUi $this) })
     $ui.TenantCheck.Add_Click({ Invoke-TarStartFormCheck -Ui (Get-TarFormUi $this) })
+    $ui.PnPCreate.Add_Click({ $u = Get-TarFormUi $this; try { Invoke-TarStartFormPnPCreate -Ui $u } catch { $u.Error.Text = $_.Exception.Message } })
+    $ui.SharePoint.Add_CheckedChanged({ Update-TarStartFormState -Ui (Get-TarFormUi $this) })
     $ui.Browse.Add_Click({
             $u = Get-TarFormUi $this
             try {
@@ -207,6 +212,11 @@ function Update-TarStartFormState {
     $Ui.Associations.Enabled = $app
     if (-not $app) { $Ui.Associations.Checked = $false }
     $Ui.ProfileName.Enabled = $Ui.Save.Checked
+    $Ui.PnPHint.ForeColor = [System.Drawing.SystemColors]::GrayText
+    $Ui.PnPHint.Text = if ($app) { 'Not needed for app-only: the app above is used for SharePoint too.' }
+    elseif ($Ui.PnPClientId.Text.Trim()) { 'Used for SharePoint with delegated sign-in.' }
+    elseif ($Ui.SharePoint.Checked) { "Required for SharePoint with delegated sign-in. Click 'Create...' for a guided setup." }
+    else { "Only needed if you include SharePoint. 'Create...' sets it up." }
     if ($Ui.ConnectionOnly) { $Ui.Save.Checked = $true; $Ui.Save.Enabled = $false; $Ui.ProfileName.Enabled = $true }
 }
 
@@ -390,4 +400,81 @@ function Show-TarCheckList {
         if ($ui.Form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
         $Rows | Where-Object { $ui.Checked.Contains([string]$_.Id) }
     } finally { $ui.Form.Dispose() }
+}
+
+# --- PnP app guide ------------------------------------------------------------------------------------------
+
+function Get-TarPnPGuideText {
+    # Pure: the guide text (tested on every platform).
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Tenant, [Parameter(Mandatory)][bool]$PnPInstalled)
+    $nl = [Environment]::NewLine
+    $lines = @(
+        'Why: SharePoint scanning with delegated sign-in uses PnP PowerShell, and PnP requires its own Entra app'
+        '(mandatory since 9 September 2024). App-only does not need it - the certificate app already covers SharePoint.'
+        ''
+        "What 'Create app now' does in $($Tenant):"
+        '  1. Opens a PowerShell window and a browser sign-in.'
+        "  2. Registers the app 'TeamsAccessReport-PnP' with ONE delegated permission: SharePoint AllSites.FullControl"
+        '     (needed to read permissions), redirect URI http://localhost. No secrets, no certificate.'
+        '  3. Opens the admin-consent page - accept it (an admin must consent).'
+        '  4. Fills in the app ID here; it is saved with the profile when you click Start.'
+        ''
+        'Requirements: an account that may register apps (for example Application Administrator or Cloud Application'
+        'Administrator) and PnP.PowerShell installed.'
+    )
+    if (-not $PnPInstalled) { $lines += @('', 'PnP.PowerShell is NOT installed. Run in PowerShell, then click Create again:', '  Install-Module PnP.PowerShell -Scope CurrentUser') }
+    $lines -join $nl
+}
+
+function New-TarPnPGuideForm {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Creates in-memory UI objects only.')]
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)][string]$Tenant, [Parameter(Mandatory)][bool]$PnPInstalled)
+    $ui = @{}
+    $form = [System.Windows.Forms.Form]@{
+        Text = 'PnP app for SharePoint (delegated)'; AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; FormBorderStyle = 'FixedDialog'
+        MaximizeBox = $false; MinimizeBox = $false; StartPosition = 'CenterParent'; TopMost = $true; AutoScaleMode = 'Dpi'
+        Font = [System.Drawing.SystemFonts]::MessageBoxFont; Padding = [System.Windows.Forms.Padding]::new(12)
+    }
+    $ui.Form = $form; $form.Tag = $ui
+    $root = [System.Windows.Forms.FlowLayoutPanel]@{ FlowDirection = 'TopDown'; AutoSize = $true; WrapContents = $false; Dock = 'Fill' }
+    $ui.Text = [System.Windows.Forms.Label]@{ AutoSize = $true; MaximumSize = [System.Drawing.Size]::new(640, 0); Text = (Get-TarPnPGuideText -Tenant $Tenant -PnPInstalled $PnPInstalled) }
+    $buttons = [System.Windows.Forms.FlowLayoutPanel]@{ FlowDirection = 'RightToLeft'; AutoSize = $true; WrapContents = $false; Anchor = 'Right'; Margin = [System.Windows.Forms.Padding]::new(0, 12, 0, 0) }
+    $ui.Create = [System.Windows.Forms.Button]@{ Text = 'Create app now'; AutoSize = $true; DialogResult = 'OK'; Enabled = $PnPInstalled }
+    $ui.Docs = [System.Windows.Forms.Button]@{ Text = 'Open PnP documentation'; AutoSize = $true }
+    $ui.Cancel = [System.Windows.Forms.Button]@{ Text = 'Cancel'; AutoSize = $true; DialogResult = 'Cancel' }
+    $buttons.Controls.AddRange(@($ui.Cancel, $ui.Create, $ui.Docs))
+    $root.Controls.AddRange(@($ui.Text, $buttons))
+    $form.Controls.Add($root)
+    $form.AcceptButton = $ui.Create; $form.CancelButton = $ui.Cancel
+    $ui.Docs.Add_Click({ Start-Process 'https://pnp.github.io/powershell/articles/registerapplication.html' })
+    $ui
+}
+
+function Invoke-TarStartFormPnPCreate {
+    # 'Create...' button: guide -> registration in a separate window -> fill the field.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Ui)
+    if (-not $Ui.Tenant.Text.Trim()) { $Ui.Error.Text = 'Enter the tenant first.'; return }
+    $tenant = (Resolve-TarTenantOrPassThrough -Tenant $Ui.Tenant.Text).Query
+    $guide = New-TarPnPGuideForm -Tenant $tenant -PnPInstalled (Test-TarPnPInstalled)
+    try { if ($guide.Form.ShowDialog($Ui.Form) -ne [System.Windows.Forms.DialogResult]::OK) { return } } finally { $guide.Form.Dispose() }
+    $Ui.Form.UseWaitCursor = $true
+    $Ui.PnPHint.ForeColor = [System.Drawing.SystemColors]::ControlText
+    $Ui.PnPHint.Text = 'Registering... finish the sign-in and the consent in the browser / PowerShell window.'
+    $Ui.Form.Enabled = $false
+    try {
+        $id = New-TarPnPApp -Tenant $tenant -WaitCallback { [System.Windows.Forms.Application]::DoEvents() } -Confirm:$false
+        $Ui.PnPClientId.Text = $id
+        Update-TarStartFormState -Ui $Ui
+        $Ui.PnPHint.ForeColor = [System.Drawing.Color]::DarkGreen
+        $Ui.PnPHint.Text = "Created TeamsAccessReport-PnP ($id). It is saved with the profile when you click Start."
+        $Ui.Error.Text = ''
+    } catch {
+        Update-TarStartFormState -Ui $Ui
+        $Ui.Error.Text = $_.Exception.Message
+    } finally { $Ui.Form.Enabled = $true; $Ui.Form.UseWaitCursor = $false; $Ui.Form.Activate() }
 }
