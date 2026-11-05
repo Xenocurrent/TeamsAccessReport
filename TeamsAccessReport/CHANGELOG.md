@@ -1,4 +1,16 @@
-# Changelog
+﻿# Changelog
+
+## 2.0.2 – 2026-11-05
+### Fixed
+- `Get-TarProperty` failed on generic `Dictionary<TKey,TValue>` (the type the Graph SDK returns for response
+  headers) with "Cannot find an overload for Contains". This broke every Graph call against a real tenant.
+  Root cause: `IDictionary.Contains` is an explicit interface implementation; the value is now cast inline at the call.
+- Header lookup is now case-insensitive.
+
+### Tests
+- New unit tests for `Get-TarProperty` with Hashtable, generic Dictionary and PSCustomObject.
+- Retry-After parsing extracted to the pure function `ConvertFrom-TarRetryAfterHeader`, tested with the SDK's real
+  header type (the integration tests mock the whole adapter and therefore never exercised it).
 
 ## 2.0.1 – 2026-11-05
 ### Changed

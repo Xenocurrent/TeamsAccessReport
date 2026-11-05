@@ -8,7 +8,11 @@ function Get-TarProperty {
     param([AllowNull()]$InputObject, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $InputObject) { return $null }
     if ($InputObject -is [System.Collections.IDictionary]) {
-        if ($InputObject.Contains($Name)) { return $InputObject[$Name] }
+        # The cast must be inline: generic Dictionary<TKey,TValue> (e.g. Graph SDK response headers) implements
+        # IDictionary.Contains explicitly, and a cast stored in a variable is lost (the variable holds the object).
+        if (([System.Collections.IDictionary]$InputObject).Contains($Name)) { return $InputObject[$Name] }
+        # Fallback: case-insensitive key match (HTTP header names are case-insensitive).
+        foreach ($key in $InputObject.Keys) { if ([string]$key -eq $Name) { return $InputObject[$key] } }
         return $null
     }
     $prop = $InputObject.PSObject.Properties[$Name]
@@ -50,6 +54,17 @@ function Get-TarBackoffDelay {
     param([Parameter(Mandatory)][int]$Attempt, [Parameter(Mandatory)][int]$BaseDelaySeconds, [int]$RetryAfterSeconds = 0)
     $base = if ($RetryAfterSeconds -gt 0) { $RetryAfterSeconds } else { [math]::Min(120, $BaseDelaySeconds * [math]::Pow(2, $Attempt - 1)) }
     return [int]($base * 1000) + $script:TarRandom.Next(0, 1000)
+}
+
+function ConvertFrom-TarRetryAfterHeader {
+    # Retry-After in seconds from a response header collection (Hashtable or generic Dictionary). 0 if absent/invalid.
+    [CmdletBinding()]
+    [OutputType([int])]
+    param([AllowNull()]$Headers)
+    $seconds = 0
+    $raw = Get-TarProperty $Headers 'Retry-After'
+    if ($raw) { [void][int]::TryParse([string](@($raw)[0]), [ref]$seconds) }
+    return $seconds
 }
 
 function Protect-TarCsvValue {

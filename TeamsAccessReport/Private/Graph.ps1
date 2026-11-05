@@ -8,10 +8,7 @@ function Invoke-TarGraphRaw {
     $statusCode = 0; $headers = $null
     $body = Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputType Hashtable -SkipHttpErrorCheck `
         -StatusCodeVariable 'statusCode' -ResponseHeadersVariable 'headers' -ErrorAction Stop
-    $retryAfter = 0
-    $raw = Get-TarProperty $headers 'Retry-After'
-    if ($raw) { [void][int]::TryParse([string](@($raw)[0]), [ref]$retryAfter) }
-    [pscustomobject]@{ StatusCode = [int]$statusCode; Body = $body; RetryAfterSeconds = $retryAfter }
+    [pscustomobject]@{ StatusCode = [int]$statusCode; Body = $body; RetryAfterSeconds = (ConvertFrom-TarRetryAfterHeader -Headers $headers) }
 }
 
 function Invoke-TarGraphRequest {

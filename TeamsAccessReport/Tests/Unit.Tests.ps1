@@ -18,6 +18,40 @@ Describe 'Module surface' {
     }
 }
 
+Describe 'Get-TarProperty' {
+    It 'reads <Case>' -ForEach @(
+        @{ Case = 'Hashtable'; Factory = { @{ 'Retry-After' = '5' } } }
+        @{ Case = 'generic Dictionary (Graph SDK response headers)'; Factory = { $d = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.IEnumerable[string]]]::new(); $d['Retry-After'] = [string[]]@('5'); $d } }
+        @{ Case = 'case-insensitive header name'; Factory = { $d = [System.Collections.Generic.Dictionary[string, string]]::new(); $d['retry-after'] = '5'; $d } }
+        @{ Case = 'PSCustomObject'; Factory = { [pscustomobject]@{ 'Retry-After' = '5' } } }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ Factory = $Factory } {
+            [string](@(Get-TarProperty -InputObject (& $Factory) -Name 'Retry-After')[0]) | Should -Be '5'
+        }
+    }
+    It 'returns $null for missing keys and $null input' {
+        InModuleScope TeamsAccessReport {
+            $d = [System.Collections.Generic.Dictionary[string, string]]::new()
+            Get-TarProperty -InputObject $d -Name 'x' | Should -BeNullOrEmpty
+            Get-TarProperty -InputObject $null -Name 'x' | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe 'ConvertFrom-TarRetryAfterHeader (adapter contract with the real Graph SDK header type)' {
+    It '<Case> -> <Expected>' -ForEach @(
+        @{ Case = 'generic Dictionary[string, IEnumerable[string]]'; Expected = 7; Factory = { $h = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.IEnumerable[string]]]::new(); $h['Retry-After'] = [string[]]@('7'); $h } }
+        @{ Case = 'Hashtable'; Expected = 3; Factory = { @{ 'Retry-After' = '3' } } }
+        @{ Case = 'header missing'; Expected = 0; Factory = { [System.Collections.Generic.Dictionary[string, System.Collections.Generic.IEnumerable[string]]]::new() } }
+        @{ Case = 'non-numeric (HTTP date)'; Expected = 0; Factory = { @{ 'Retry-After' = 'Wed, 21 Oct 2026 07:28:00 GMT' } } }
+        @{ Case = '$null headers'; Expected = 0; Factory = { $null } }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ Factory = $Factory; Expected = $Expected } {
+            ConvertFrom-TarRetryAfterHeader -Headers (& $Factory) | Should -Be $Expected
+        }
+    }
+}
+
 Describe 'Get-TarHttpStatusFromError' {
     It 'parses <Message> as <Expected>' -ForEach @(
         @{ Message = 'Response status code does not indicate success: 429 (Too Many Requests).'; Expected = 429 }
