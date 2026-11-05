@@ -1,5 +1,5 @@
-﻿# Konstanter: filnamn (datakontrakt mellan faserna), checkpoint-namn och fyndtyper.
-# Allt som lagras eller jämförs refererar hit – inga magiska strängar i logiken.
+﻿# Constants: file names (data contract between phases), checkpoint names and finding types.
+# Everything that is stored or compared references this file - no magic strings in the logic.
 
 $script:TarFile = @{
     Teams              = 'Teams.csv'
@@ -34,7 +34,9 @@ $script:TarFinding = @{
 }
 
 $script:TarRetryableStatus = @(429, 500, 502, 503, 504)
+# SharePoint returns role names in the site's language. These are data values, not UI text:
+# 'Limited Access' (English) and its Swedish localization. Add the name for every site language you scan.
 $script:TarLimitedAccessRoles = @('Limited Access', 'Begränsad åtkomst')
 
-# Hur fas 2 körs. 'Process' i produktion (Graph/PnP-assemblykonflikt). Tester sätter 'InProcess'.
+# How phase 2 runs. 'Process' in production (Graph/PnP assembly conflict). Tests set 'InProcess'.
 $script:TarSharePointExecutionMode = 'Process'

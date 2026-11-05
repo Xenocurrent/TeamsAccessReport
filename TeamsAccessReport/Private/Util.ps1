@@ -1,9 +1,9 @@
-﻿# Rena hjälpfunktioner utan sidoeffekter (enhetstestade).
+﻿# Pure helper functions without side effects (unit tested).
 
 $script:TarRandom = [System.Random]::new()
 
 function Get-TarProperty {
-    # StrictMode-säker egenskapsläsning för hashtable, PSCustomObject och $null.
+    # StrictMode-safe property read for hashtable, PSCustomObject and $null.
     [CmdletBinding()]
     param([AllowNull()]$InputObject, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $InputObject) { return $null }
@@ -17,8 +17,8 @@ function Get-TarProperty {
 }
 
 function ConvertTo-TarArray {
-    # Normaliserar samling: array, {results:[]} (odata=verbose) eller enskilt objekt.
-    # Skickar element i pipeline – anropa som @(ConvertTo-TarArray $x).
+    # Normalizes a collection: array, {results:[]} (odata=verbose) or a single object.
+    # Emits elements to the pipeline - call as @(ConvertTo-TarArray $x).
     [CmdletBinding()]
     param([AllowNull()]$InputObject)
     if ($null -eq $InputObject) { return }
@@ -28,7 +28,7 @@ function ConvertTo-TarArray {
 }
 
 function Get-TarHttpStatusFromError {
-    # Endast för källor som inte exponerar statuskod (PnP). Tolkar statusfraser, aldrig godtyckliga siffror.
+    # Only for sources that do not expose a status code (PnP). Parses status phrases, never arbitrary digits.
     [CmdletBinding()]
     [OutputType([int])]
     param([Parameter(Mandatory)][System.Management.Automation.ErrorRecord]$ErrorRecord)
@@ -44,7 +44,7 @@ function Get-TarHttpStatusFromError {
 }
 
 function Get-TarBackoffDelay {
-    # Exponentiell backoff med jitter, tak 120 s. Retry-After har företräde.
+    # Exponential backoff with jitter, capped at 120 s. Retry-After takes precedence.
     [CmdletBinding()]
     [OutputType([int])]
     param([Parameter(Mandatory)][int]$Attempt, [Parameter(Mandatory)][int]$BaseDelaySeconds, [int]$RetryAfterSeconds = 0)
@@ -53,14 +53,14 @@ function Get-TarBackoffDelay {
 }
 
 function Protect-TarCsvValue {
-    # Skydd mot formelinjektion i Excel (externa användare styr sina visningsnamn).
+    # Protects against formula injection in Excel (external users control their own display names).
     [CmdletBinding()]
     param([Parameter(Mandatory, ValueFromPipeline)][AllowNull()]$InputObject)
     process {
         $copy = [ordered]@{}
         foreach ($p in $InputObject.PSObject.Properties) {
             $v = $p.Value
-            if ($v -is [string] -and $v.Length -eq 0) { $v = $null }   # kanonisk form: tom sträng och $null skrivs lika
+            if ($v -is [string] -and $v.Length -eq 0) { $v = $null }   # canonical form: empty string and $null are written identically
             elseif ($v -is [string] -and $v -match '^[=+\-@\t\r]') { $v = "'" + $v }
             $copy[$p.Name] = $v
         }

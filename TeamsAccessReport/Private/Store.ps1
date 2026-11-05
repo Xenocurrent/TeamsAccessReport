@@ -1,7 +1,7 @@
-﻿# Rapportlager: CSV-filer är datakontraktet mellan faserna; checkpoint-filer ger återupptag.
+﻿# Report store: CSV files are the data contract between phases; checkpoint files enable resume.
 
 function New-TarContext {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Ren konstruktor i minnet; ändrar inget systemtillstånd.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure in-memory constructor; does not change system state.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -21,11 +21,11 @@ function Initialize-TarStore {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)]$Context, [switch]$Resume)
     if ($Resume) {
-        if (-not (Test-Path (Join-Path $Context.OutputPath $script:TarFile.Selection))) { throw "-Resume: $($script:TarFile.Selection) saknas i $($Context.OutputPath)." }
+        if (-not (Test-Path (Join-Path $Context.OutputPath $script:TarFile.Selection))) { throw "-Resume: $($script:TarFile.Selection) is missing in $($Context.OutputPath)." }
     } elseif (Test-Path $Context.StateDir) {
-        throw "$($Context.OutputPath) innehåller redan en körning. Använd -Resume eller en ny -OutputPath."
+        throw "$($Context.OutputPath) already contains a run. Use -Resume or a new -OutputPath."
     }
-    if ($PSCmdlet.ShouldProcess($Context.StateDir, 'Skapa rapportkatalog')) {
+    if ($PSCmdlet.ShouldProcess($Context.StateDir, 'Create report directory')) {
         $null = New-Item -Path $Context.StateDir -ItemType Directory -Force
     }
 }
@@ -44,7 +44,7 @@ function Write-TarRecord {
 }
 
 function Read-TarRecord {
-    # Skickar rader i pipeline – anropa som @(Read-TarRecord ...).
+    # Emits rows to the pipeline - call as @(Read-TarRecord ...).
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Name)
     $p = Get-TarStorePath $Context $Name
@@ -52,11 +52,11 @@ function Read-TarRecord {
 }
 
 function Set-TarRecord {
-    # Skriver om en hel fil (används vid omräkning/rensning). Tom mängd tar bort filen.
+    # Rewrites a whole file (used for recalculation/cleanup). An empty set removes the file.
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Name, [AllowEmptyCollection()][object[]]$InputObject)
     $p = Get-TarStorePath $Context $Name
-    if (-not $PSCmdlet.ShouldProcess($p, 'Skriv om')) { return }
+    if (-not $PSCmdlet.ShouldProcess($p, 'Rewrite')) { return }
     if (Test-Path $p) { Remove-Item $p -Force }
     if ($InputObject -and $InputObject.Count) { $InputObject | Protect-TarCsvValue | Export-Csv -Path $p -NoTypeInformation -Encoding utf8BOM }
 }
@@ -89,7 +89,7 @@ function Remove-TarCheckpoint {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string[]]$Key)
     $p = Join-Path $Context.StateDir $Name
-    if (-not (Test-Path $p) -or -not $PSCmdlet.ShouldProcess($p, 'Ta bort checkpoint-nycklar')) { return }
+    if (-not (Test-Path $p) -or -not $PSCmdlet.ShouldProcess($p, 'Remove checkpoint keys')) { return }
     $remaining = [string[]]@([System.IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -and $_.Trim() -notin $Key })
     [System.IO.File]::WriteAllLines($p, $remaining, [System.Text.UTF8Encoding]::new($false))
 }

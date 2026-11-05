@@ -28,10 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Visa PowerShell-version
+      - name: Show PowerShell version
         run: $PSVersionTable | Format-Table -AutoSize | Out-String | Write-Host
 
-      - name: Installera beroenden
+      - name: Install dependencies
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Scope CurrentUser -Force -ErrorAction Stop
@@ -40,10 +40,10 @@ jobs:
           Get-Module -ListAvailable PSScriptAnalyzer, Pester, Microsoft.Graph.Authentication |
             Sort-Object Name, Version -Descending | Select-Object Name, Version -Unique | Format-Table | Out-String | Write-Host
 
-      - name: Analys + tester + täckning
+      - name: Analysis + tests + coverage
         run: ./TeamsAccessReport/build.ps1
 
-      - name: Ladda upp testresultat
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:

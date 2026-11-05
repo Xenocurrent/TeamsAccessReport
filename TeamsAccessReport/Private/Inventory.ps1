@@ -1,4 +1,4 @@
-﻿# Fas 1 – Teams-inventering via Graph. Checkpoint per team; rader skrivs först när teamet är klart.
+﻿# Phase 1 - Teams inventory via Graph. Checkpoint per team; rows are written only when the team is complete.
 
 function ConvertTo-TarAccessRecord {
     [CmdletBinding()]
@@ -16,7 +16,7 @@ function ConvertTo-TarAccessRecord {
 }
 
 function Get-TarChannelSite {
-    # filesFolder -> driveItem -> sharepointIds.siteUrl (fungerar för alla kanaltyper och managed paths).
+    # filesFolder -> driveItem -> sharepointIds.siteUrl (works for all channel types and managed paths).
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$TeamId, [Parameter(Mandatory)][string]$ChannelId)
     $base = $Context.GraphBase
@@ -39,8 +39,8 @@ function Invoke-TarTeamInventory {
     $i = 0
     foreach ($team in $Teams) {
         $i++
-        if ($done.Contains($team.id)) { Write-TarLog "[$i] Hoppar över (klar): $($team.displayName)"; continue }
-        Write-Progress -Activity 'Fas 1: Teams' -Status "$($team.displayName) ($i/$($Teams.Count))" -PercentComplete (100 * $i / [math]::Max(1, $Teams.Count))
+        if ($done.Contains($team.id)) { Write-TarLog "[$i] Skipping (done): $($team.displayName)"; continue }
+        Write-Progress -Activity 'Phase 1: Teams' -Status "$($team.displayName) ($i/$($Teams.Count))" -PercentComplete (100 * $i / [math]::Max(1, $Teams.Count))
         Write-TarLog "[$i/$($Teams.Count)] Team '$($team.displayName)' ($($team.id))"
         $failed = [System.Collections.Generic.List[string]]::new()
         $access = [System.Collections.Generic.List[object]]::new()
@@ -74,7 +74,7 @@ function Invoke-TarTeamInventory {
         if ($ChannelFilter.ContainsKey($team.id)) {
             $sel = $ChannelFilter[$team.id]
             $channels = @($channels | Where-Object { $sel.Contains([string]$_.id) })
-            Write-TarLog "    Kanalurval tillämpat: $($channels.Count) kanaler"
+            Write-TarLog "    Channel filter applied: $($channels.Count) channels"
         }
 
         foreach ($ch in $channels) {
@@ -95,7 +95,7 @@ function Invoke-TarTeamInventory {
                         $path = if ($src) { 'IndirectViaSharedTeam' } else { 'DirectChannelMember' }
                         $access.Add((ConvertTo-TarAccessRecord -Member $cm -Team $team -Channel $ch -Scope 'Channel' -AccessPath $path -SourceTeamId $srcTeam))
                     }
-                    Write-TarLog "    Kanal '$($ch.displayName)' [$($ch.membershipType)]: $($members.Count) medlemskapsrader"
+                    Write-TarLog "    Channel '$($ch.displayName)' [$($ch.membershipType)]: $($members.Count) membership rows"
                 } catch { & $fail "AllMembers:$($ch.displayName)" $ch.id $_ }
             }
         }
@@ -110,18 +110,18 @@ function Invoke-TarTeamInventory {
             })
         Add-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.Graph -Key $team.id
     }
-    Write-Progress -Activity 'Fas 1: Teams' -Completed
+    Write-Progress -Activity 'Phase 1: Teams' -Completed
 }
 
 function Reset-TarIncompleteWork {
-    # Vid -Resume: arkivera gamla fel och ta bort team med Completeness=Partial så att de körs om.
+    # On -Resume: archive old errors and remove teams with Completeness=Partial so they run again.
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)]$Context)
     $errFile = Get-TarStorePath $Context $script:TarFile.Errors
-    if ((Test-Path $errFile) -and $PSCmdlet.ShouldProcess($errFile, 'Arkivera')) {
+    if ((Test-Path $errFile) -and $PSCmdlet.ShouldProcess($errFile, 'Archive')) {
         $archived = Join-Path $Context.StateDir ('Errors_{0:yyyyMMdd_HHmmss}.csv' -f (Get-Date))
         Move-Item $errFile $archived -Force
-        Write-TarLog "Tidigare fel arkiverade: $archived"
+        Write-TarLog "Previous errors archived: $archived"
     }
     $partial = [string[]]@(Read-TarRecord -Context $Context -Name $script:TarFile.Teams | Where-Object Completeness -eq 'Partial' | ForEach-Object { $_.TeamId })
     if ($partial.Count -eq 0) { return }
@@ -130,5 +130,5 @@ function Reset-TarIncompleteWork {
         Set-TarRecord -Context $Context -Name $name -InputObject $keep
     }
     Remove-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.Graph -Key $partial
-    Write-TarLog "Kör om $($partial.Count) ofullständiga team: $($partial -join ', ')" -Level WARN
+    Write-TarLog "Re-running $($partial.Count) incomplete teams: $($partial -join ', ')" -Level WARN
 }

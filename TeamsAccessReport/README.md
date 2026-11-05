@@ -1,8 +1,8 @@
 # TeamsAccessReport
 
-Revisionsrapport över **faktisk** åtkomst i Microsoft Teams och tillhörande SharePoint-webbplatser:
-team- och kanalmedlemskap (direkt/indirekt, cross-tenant), SharePoint-behörigheter ner på objektnivå,
-upplösning av grupp-claims till användare och avvikelser mellan Teams och SharePoint.
+Audit report of **actual** access in Microsoft Teams and the associated SharePoint sites:
+team and channel membership (direct/indirect, cross-tenant), SharePoint permissions down to item level,
+resolution of group claims to users, and drift between Teams and SharePoint.
 
 ```powershell
 Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
@@ -11,73 +11,78 @@ $s = Invoke-TeamsAccessReport -TenantId '<TENANT_ID>' -ClientId '<APP_ID>' -Cert
 $s.ResultStatus   # Complete | Incomplete
 ```
 
-## Arkitektur
+Run `Get-Help Invoke-TeamsAccessReport -Full` for every parameter.
+
+## Architecture
 
 ```
-Invoke-TeamsAccessReport (Public)          orkestrering, validering, parameter sets, try/finally
- ├─ Connect-TarGraph            Graph.ps1      inloggning, tenant-identifiering, SDK-retry
- ├─ Get/Import-TarTeamSelection Selection.ps1  interaktivt urval (UI isolerat från logik)
- ├─ Fas 1 Invoke-TarTeamInventory   Inventory.ps1     Graph  → Teams/TeamsAccess/Channels/Incoming.csv
- ├─ Fas 2 Start-TarSharePointScan   SharePointScan.ps1 PnP  → SPAssignments/SPGroupMembers.csv
- │        └─ pwsh Worker/Invoke-SharePointScan.ps1   (separat process)
- ├─ Fas 3 Invoke-TarPrincipalResolution Resolution.ps1 Graph → EffectiveSharePointAccess.csv
- ├─ Fas 4 Invoke-TarDriftAnalysis / ExternalAssociationScan  Analysis.ps1 → DriftReport/ExternalAssociations.csv
- └─ Export-TarSummary                                            → Summary.json + returvärde
-Delade: Constants.ps1 (datakontrakt), Store.ps1 (CSV-lager, checkpoint), Util.ps1 (rena funktioner), Logging.ps1
+Invoke-TeamsAccessReport (Public)          orchestration, validation, parameter sets, try/finally
+ ├─ Connect-TarGraph            Graph.ps1      sign-in, tenant discovery, SDK retry
+ ├─ Get/Import-TarTeamSelection Selection.ps1  interactive selection (UI isolated from logic)
+ ├─ Phase 1 Invoke-TarTeamInventory   Inventory.ps1      Graph → Teams/TeamsAccess/Channels/Incoming.csv
+ ├─ Phase 2 Start-TarSharePointScan   SharePointScan.ps1 PnP   → SPAssignments/SPGroupMembers.csv
+ │          └─ pwsh Worker/Invoke-SharePointScan.ps1   (separate process)
+ ├─ Phase 3 Invoke-TarPrincipalResolution Resolution.ps1 Graph → EffectiveSharePointAccess.csv
+ ├─ Phase 4 Invoke-TarDriftAnalysis / ExternalAssociationScan  Analysis.ps1 → DriftReport/ExternalAssociations.csv
+ └─ Export-TarSummary                                            → Summary.json + return value
+Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.ps1 (pure functions), Logging.ps1
 ```
 
-**Regler som håller strukturen ren**
+**Rules that keep the structure clean**
 
-| Regel | Varför |
+| Rule | Why |
 |---|---|
-| All IO mot Graph går via `Invoke-TarGraphRaw`, all IO mot SharePoint via `Invoke-TarSpRaw` | En söm per extern tjänst; tester mockar bara dessa |
-| Inga script-globala variabler i logik; allt via `-Context` | Explicita beroenden, testbart, PSSA kan verifiera parameteranvändning |
-| Faserna kommunicerar endast via filer i `Constants.ps1` (`$script:TarFile`) | Varje fas kan köras om/återupptas isolerat; filerna är ett datakontrakt |
-| Funktioner som returnerar samlingar skickar element i pipeline; anropare wrappar `@(...)` | Undviker PowerShells unary-comma/`$null`-fällor (tre buggar i v1 kom härifrån) |
-| UI (`Read-Host`, meny) endast i `Selection.ps1` | Resten körs oövervakat och testas utan konsol |
-| Worker laddar aldrig Graph SDK | Känd assemblykonflikt PnP ↔ Graph; enhetstest verifierar detta på tokennivå |
+| All Graph IO goes through `Invoke-TarGraphRaw`; all SharePoint IO through `Invoke-TarSpRaw` | One seam per external service; tests mock only these |
+| No script-scope variables in logic; everything flows through `-Context` | Explicit dependencies, testable, PSScriptAnalyzer can verify parameter usage |
+| Phases communicate only through the files defined in `Constants.ps1` (`$script:TarFile`) | Each phase can be re-run or resumed in isolation; the files are a data contract |
+| Functions returning collections emit elements to the pipeline; callers wrap with `@(...)` | Avoids PowerShell's unary-comma/`$null` pitfalls (three v1 bugs came from here) |
+| UI (`Read-Host`, menu) lives only in `Selection.ps1` | Everything else runs unattended and is tested without a console |
+| The worker never loads the Graph SDK | Known PnP ↔ Graph assembly conflict; a unit test verifies this at token level |
 
-## Designbeslut (ADR-kort)
+## Design decisions (short ADRs)
 
-1. **Separat process för PnP.** Graph SDK och PnP.PowerShell laddar inkompatibla assemblies i samma session. Alternativ (bara PnP eller bara Graph) förkastade: Graph saknar SharePoint-rollkopplingar, och `inheritedFrom` returneras inte för SharePoint.
-2. **CSV som mellanlager i stället för minnesobjekt.** Ger checkpoint/återupptag och granskningsbarhet. Kostnad: scheman är implicita → samlade i `Constants.ps1` och skyddade av integrationstest (byte-identisk jämförelse).
-3. **Två retry-lager.** SDK-hanteraren (429/503/504, `Retry-After`) konfigureras via `Set-MgRequestContext`; yttre loop (max 3) tar 500/502 och uttömd SDK-retry. Totalt tak: 3 × (MaxRetries + 1) försök per anrop.
-4. **Sekventiell körning.** Förutsägbar throttling och enkel checkpoint. Parallellism avvaktar mätdata från riktig tenant.
+1. **Separate process for PnP.** The Graph SDK and PnP.PowerShell load incompatible assemblies in the same session. Alternatives (PnP only or Graph only) were rejected: Graph does not expose SharePoint role assignments, and `inheritedFrom` is not returned for SharePoint.
+2. **CSV as intermediate store instead of in-memory objects.** Enables checkpoint/resume and auditability. Cost: schemas are implicit → centralized in `Constants.ps1` and guarded by an integration test (byte-identical comparison).
+3. **Two retry layers.** The SDK handler (429/503/504, `Retry-After`) is configured via `Set-MgRequestContext`; an outer loop (max 3) handles 500/502 and exhausted SDK retries. Upper bound: 3 × (MaxRetries + 1) attempts per call.
+4. **Sequential execution.** Predictable throttling and simple checkpoints. Parallelism waits for measurements from a real tenant.
 
-## Behörigheter
+## Permissions
 
-| Läge | Graph | SharePoint (`-IncludeSharePoint`) |
+| Mode | Graph | SharePoint (`-IncludeSharePoint`) |
 |---|---|---|
-| App-only (rekommenderas) | Team.ReadBasic.All, Channel.ReadBasic.All, TeamMember.Read.All, ChannelMember.Read.All, Files.Read.All, GroupMember.Read.All, User.Read.All | Sites.FullControl.All (läsning av rollkopplingar kräver Full Control) eller Sites.Selected + fullcontrol per webbplats |
-| Delegerat | Samma men User.ReadBasic.All + User.Read | AllSites.FullControl + egen PnP-app (`-PnPClientId`) |
+| App-only (recommended) | Team.ReadBasic.All, Channel.ReadBasic.All, TeamMember.Read.All, ChannelMember.Read.All, Files.Read.All, GroupMember.Read.All, User.Read.All | Sites.FullControl.All (reading role assignments requires Full Control) or Sites.Selected + fullcontrol per site |
+| Delegated | Same, but User.ReadBasic.All + User.Read | AllSites.FullControl + a dedicated PnP app (`-PnPClientId`) |
 
-## Utdata (datakontrakt)
+## Output (data contract)
 
-| Fil | Nyckel | Innehåll |
+| File | Key | Content |
 |---|---|---|
-| `Teams.csv` | TeamId | Inventering + `Completeness` / `FailedStages` |
-| `TeamsAccess.csv` | TeamId, ChannelId, UserId | Medlemskap, `AccessPath` (TeamMembership / DirectChannelMember / IndirectViaSharedTeam) |
-| `Channels.csv` | ChannelId | Kanaltyp och `SiteUrl` (källa för fas 2) |
-| `SPAssignments.csv` | SiteUrl, Scope, ObjectPath | Rå rollkopplingar (SiteCollectionAdmin/Web/List/Item) |
-| `EffectiveSharePointAccess.csv` | SiteUrl, UserId | Upplöst åtkomst med `ExpansionPath` |
-| `DriftReport.csv` | SiteUrl, Finding, UserId | Avvikelser, `Severity` High/Medium/Low/Info |
-| `Errors.csv` | – | Misslyckade steg; arkiveras till `state/` vid `-Resume` |
-| `run.jsonl` | – | Strukturerad logg (en JSON per rad) |
+| `Teams.csv` | TeamId | Inventory + `Completeness` / `FailedStages` |
+| `TeamsAccess.csv` | TeamId, ChannelId, UserId | Membership, `AccessPath` (TeamMembership / DirectChannelMember / IndirectViaSharedTeam) |
+| `Channels.csv` | ChannelId | Channel type and `SiteUrl` (input for phase 2) |
+| `SPAssignments.csv` | SiteUrl, Scope, ObjectPath | Raw role assignments (SiteCollectionAdmin/Web/List/Item) |
+| `EffectiveSharePointAccess.csv` | SiteUrl, UserId | Resolved access with `ExpansionPath` |
+| `DriftReport.csv` | SiteUrl, Finding, UserId | Drift findings, `Severity` High/Medium/Low/Info |
+| `Errors.csv` | – | Failed steps; archived to `state/` on `-Resume` |
+| `run.jsonl` | – | Structured log (one JSON object per line) |
 
-## Utveckling
+## Development
 
 ```powershell
-./build.ps1           # PSScriptAnalyzer (0 tillåtna) + Pester + täckning ≥ 80 %
-./build.ps1 -Format   # formatera enligt PSScriptAnalyzerSettings.psd1 först
+./build.ps1           # PSScriptAnalyzer (0 findings allowed) + Pester + coverage ≥ 80 %
+./build.ps1 -Format   # format according to PSScriptAnalyzerSettings.psd1 first
 ```
 
-Tester: `Tests/Unit.Tests.ps1` (rena funktioner, claim-parsning, drift-logik), `Tests/Integration.Tests.ps1`
-(hela flödet via adaptersömmarna, avbrott + `-Resume` jämförs byte för byte mot hel körning).
-Fas 2 körs `InProcess` i tester – processgränsen täcks av röktest, inte Pester.
+Tests: `Tests/Unit.Tests.ps1` (pure functions, claim parsing, drift logic) and `Tests/Integration.Tests.ps1`
+(the full flow through the adapter seams; interruption + `-Resume` is compared byte for byte with a full run).
+Phase 2 runs `InProcess` in tests – the process boundary is covered by a smoke test, not by Pester.
 
-## Kända begränsningar
+Contributing: create a branch, open a pull request, and wait for green CI on both platforms (`main` is protected).
 
-- Inte verifierat mot riktig tenant. `Summary.json` → `ResultStatus` och `Teams.csv` → `Completeness` visar ofullständig data.
-- PnP:s felformat vid 429 är inte verifierat (tolkas ur felmeddelande; Graph-sidan använder statuskod).
-- Dolda listor (`Hidden eq true`) skannas inte.
-- Delegerad PnP-inloggning kan fråga per webbplats (hypotes) – använd app-only.
+## Known limitations
+
+- Not yet verified against a real tenant. `Summary.json` → `ResultStatus` and `Teams.csv` → `Completeness` reveal incomplete data.
+- PnP's error format on 429 is not verified (parsed from the error message; the Graph side uses the status code).
+- Hidden lists (`Hidden eq true`) are not scanned.
+- Delegated PnP sign-in may prompt per site (hypothesis) – use app-only.
+- SharePoint role names are localized; `Limited Access` detection covers English and Swedish only (extend `$script:TarLimitedAccessRoles`).

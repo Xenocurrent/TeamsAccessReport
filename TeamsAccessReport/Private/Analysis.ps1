@@ -1,7 +1,7 @@
-﻿# Fas 4 – avvikelser Teams <-> SharePoint, externa kopplingar, sammanfattning.
+﻿# Phase 4 - drift between Teams and SharePoint, external associations, summary.
 
 function New-TarDriftRecord {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Ren konstruktor i minnet; ändrar inget systemtillstånd.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure in-memory constructor; does not change system state.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][hashtable]$Site, [Parameter(Mandatory)][string]$Finding, [Parameter(Mandatory)][ValidateSet('High', 'Medium', 'Low', 'Info')][string]$Severity,
@@ -12,7 +12,7 @@ function New-TarDriftRecord {
 }
 
 function Get-TarSiteMap {
-    # SiteUrl -> vilken Teams-mängd som är "förväntad" åtkomst (team-medlemmar eller kanalmedlemmar).
+    # SiteUrl -> which Teams population is the "expected" access (team members or channel members).
     [CmdletBinding()]
     [OutputType([hashtable])]
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Channels)
@@ -26,7 +26,7 @@ function Get-TarSiteMap {
 }
 
 function Get-TarSiteDrift {
-    # Ren funktion: jämför förväntad (Teams) mot faktisk (SharePoint) åtkomst för EN webbplats.
+    # Pure function: compares expected (Teams) with actual (SharePoint) access for ONE site.
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Site, [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$TeamsUsers,
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SiteRows)
@@ -68,22 +68,22 @@ function Invoke-TarDriftAnalysis {
     $teamsAccess = @(Read-TarRecord -Context $Context -Name $script:TarFile.TeamsAccess)
     $siteMap = Get-TarSiteMap -Channels @(Read-TarRecord -Context $Context -Name $script:TarFile.Channels)
     $drift = foreach ($site in $siteMap.Values) {
-        # @(if ...) krävs: en tom array som returneras från if-uttryck blir annars $null.
+        # @(if ...) is required: an empty array returned from an if expression otherwise becomes $null.
         $teamsUsers = @(if ($site.Kind -eq 'ChannelSite') { $teamsAccess | Where-Object { $_.ChannelId -eq $site.ChannelId -and $_.UserId } }
             else { $teamsAccess | Where-Object { $_.TeamId -eq $site.TeamId -and $_.Scope -eq 'Team' -and $_.UserId } })
         Get-TarSiteDrift -Site $site -TeamsUsers $teamsUsers -SiteRows @($effective | Where-Object { $_.SiteUrl.TrimEnd('/') -eq $site.Url })
     }
     $drift = @($drift | Sort-Object SiteUrl, Severity, Finding, Upn)
     Set-TarRecord -Context $Context -Name $script:TarFile.Drift -InputObject $drift
-    Write-TarLog "Fas 4: $($drift.Count) avvikelser (High=$(@($drift | Where-Object Severity -eq 'High').Count))"
+    Write-TarLog "Phase 4: $($drift.Count) drift findings (High=$(@($drift | Where-Object Severity -eq 'High').Count))"
 }
 
 function Invoke-TarExternalAssociationScan {
-    # Kräver app-only (delegerat stöder endast 'me').
+    # Requires app-only (delegated only supports 'me').
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context)
     $internal = @(Read-TarRecord -Context $Context -Name $script:TarFile.TeamsAccess | Where-Object { $_.UserId -and $_.UserTenantId -eq $Context.TenantId } | ForEach-Object UserId | Sort-Object -Unique)
-    Write-TarLog "Fas 4b: externa kopplingar för $($internal.Count) interna användare"
+    Write-TarLog "Phase 4b: external associations for $($internal.Count) internal users"
     $assoc = foreach ($uid in $internal) {
         try {
             foreach ($at in @(Get-TarGraphCollection -Context $Context -Uri "$($Context.GraphBase)/users/$uid/teamwork/associatedTeams")) {
@@ -93,7 +93,7 @@ function Invoke-TarExternalAssociationScan {
         } catch { Add-TarErrorRecord -Context $Context -Stage 'AssociatedTeams' -Target $uid -Message $_.Exception.Message }
     }
     Set-TarRecord -Context $Context -Name $script:TarFile.ExternalAssoc -InputObject @($assoc)
-    Write-TarLog "    Externa kopplingar: $(@($assoc).Count)"
+    Write-TarLog "    External associations: $(@($assoc).Count)"
 }
 
 function Export-TarSummary {
