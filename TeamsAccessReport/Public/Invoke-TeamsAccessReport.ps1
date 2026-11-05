@@ -8,12 +8,17 @@
         Phase 3  Resolution of SharePoint claims to Entra users
         Phase 4  Drift between Teams and SharePoint, external associations, summary
         Returns the summary object; all details are written as CSV/JSON to -OutputPath.
+    .PARAMETER ProfileName
+        Saved connection profile (tenant, app ID, certificate thumbprint). Create one with New-TeamsAccessReportProfile,
+        or let the start screen create it when the command is run without connection parameters. Tab-completes.
     .PARAMETER TenantId
-        Optional for delegated sign-in (resolved at sign-in). Required for app-only.
+        Tenant name, domain, e-mail address or tenant ID - 'contoso', 'contoso.com', 'admin@contoso.com' and
+        'contoso.onmicrosoft.com' all work; it is resolved to the tenant ID before sign-in. Alone: delegated sign-in.
     .PARAMETER ClientId
-        App registration (client) ID for app-only authentication.
+        App registration (client) ID for app-only authentication. Use together with -CertificateThumbprint.
     .PARAMETER CertificateThumbprint
         Thumbprint of the certificate used for app-only authentication (CurrentUser or LocalMachine store).
+        Spaces and invisible characters copied from certmgr are removed.
     .PARAMETER TeamId
         Limit the report to these team (group) IDs. Skips interactive team selection.
     .PARAMETER ChannelId
@@ -46,22 +51,24 @@
         Base delay for exponential backoff.
     .EXAMPLE
         Invoke-TeamsAccessReport
-        Interactive: sign in, confirm the tenant, select teams and channels.
+        Interactive start screen: pick a saved connection, create one (tenant, app, certificate - asked once), or sign
+        in as yourself. Then confirm the tenant and select teams and channels.
+    .EXAMPLE
+        Invoke-TeamsAccessReport -ProfileName contoso -IncludeSharePoint
+        Saved connection, no IDs to type.
     .EXAMPLE
         Invoke-TeamsAccessReport -TenantId '<TENANT_ID>' -ClientId '<APP_ID>' -CertificateThumbprint '<THUMBPRINT>' -AllTeams -Force -IncludeSharePoint -IncludeUserAssociations
         Unattended full report.
     .OUTPUTS
         PSCustomObject (summary, same content as Summary.json)
     #>
-    [CmdletBinding(DefaultParameterSetName = 'Delegated', SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(ParameterSetName = 'Delegated')]
-        [Parameter(ParameterSetName = 'AppOnly', Mandatory)]
+        [ValidateNotNullOrEmpty()][string]$ProfileName,
         [ValidateNotNullOrEmpty()][string]$TenantId,
-
-        [Parameter(ParameterSetName = 'AppOnly', Mandatory)][ValidateNotNullOrEmpty()][string]$ClientId,
-        [Parameter(ParameterSetName = 'AppOnly', Mandatory)][ValidateNotNullOrEmpty()][string]$CertificateThumbprint,
+        [ValidateNotNullOrEmpty()][string]$ClientId,
+        [ValidateNotNullOrEmpty()][string]$CertificateThumbprint,
 
         [string[]]$TeamId,
         [string[]]$ChannelId,
@@ -82,19 +89,30 @@
         [ValidateRange(1, 60)][int]$BaseDelaySeconds = 3
     )
     if (-not $PSBoundParameters.ContainsKey('InformationAction')) { $InformationPreference = 'Continue' }
-    $appOnly = $PSCmdlet.ParameterSetName -eq 'AppOnly'
+    Clear-TarLogTarget
 
-    # --- Validate combinations that parameter sets cannot express ---
+    # --- Validate parameter combinations ---
     if ($ChannelId -and -not $TeamId) { throw '-ChannelId requires -TeamId.' }
     if ($TeamId -and $AllTeams) { throw 'Specify either -TeamId or -AllTeams, not both.' }
     if ($Resume -and ($TeamId -or $AllTeams -or $ChannelId)) { throw '-Resume reads the selection from Selection.json; do not combine it with -TeamId/-AllTeams/-ChannelId.' }
-    $spClientId = if ($PnPClientId) { $PnPClientId } elseif ($appOnly) { $ClientId } else { $null }
+    if ($ProfileName -and ($TenantId -or $ClientId -or $CertificateThumbprint)) { throw 'Use either -ProfileName or -TenantId/-ClientId/-CertificateThumbprint, not both.' }
+    $canPrompt = Test-TarCanPrompt
+
+    # --- Connection: profile, explicit parameters, resumed tenant or start screen ---
+    $resumeSelection = $null
+    $selectionPath = Join-Path ([System.IO.Path]::GetFullPath($OutputPath)) $script:TarFile.Selection
+    if ($Resume -and (Test-Path $selectionPath)) { $resumeSelection = Get-Content -Path $selectionPath -Raw -Encoding utf8 | ConvertFrom-Json }
+    $conn = Resolve-TarConnection -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ProfileName $ProfileName `
+        -ResumeSelection $resumeSelection -CanPrompt:$canPrompt -SelectionMode $SelectionMode
+    if (-not $conn) { Write-TarLog 'Cancelled at connection selection.' -Level WARN; return }
+    $appOnly = $conn.AuthMode -eq 'AppOnly'
+    $spClientId = if ($PnPClientId) { $PnPClientId } elseif ($conn.PnPClientId) { $conn.PnPClientId } elseif ($appOnly) { $conn.ClientId } else { $null }
     if ($IncludeSharePoint -and -not $spClientId) {
         throw "-IncludeSharePoint requires a dedicated Entra app for PnP (-PnPClientId). Create one: Register-PnPEntraIDAppForInteractiveLogin -ApplicationName 'PnP-TeamsAccess' -Tenant <tenant>.onmicrosoft.com -SharePointDelegatePermissions AllSites.FullControl"
     }
     if ($IncludeUserAssociations -and -not $appOnly) { Write-Warning '-IncludeUserAssociations requires app-only (delegated only supports "me"). The step is skipped.' }
     $interactive = -not $Resume -and -not $TeamId -and -not $AllTeams
-    if ($interactive -and ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive)) { throw 'No interactive console. Use -TeamId, -AllTeams or -Resume.' }
+    if ($interactive -and -not $canPrompt) { throw 'No interactive console. Use -TeamId, -AllTeams or -Resume.' }
     if (Get-Module -Name PnP.PowerShell) { throw 'PnP.PowerShell is loaded in this session - start a new pwsh (assembly conflict with the Graph SDK).' }
     if (-not (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue)) {
         if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) { throw 'Microsoft.Graph.Authentication is missing: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser' }
@@ -104,13 +122,16 @@
     # --- Context, store, logging ---
     $ctx = New-TarContext -OutputPath $OutputPath -MaxRetries $MaxRetries -BaseDelaySeconds $BaseDelaySeconds -MaxItemsPerList $MaxItemsPerList -MaxSubwebDepth $MaxSubwebDepth
     $ctx.AppOnly = $appOnly
-    if ($appOnly) { $ctx.ClientId = $ClientId; $ctx.CertificateThumbprint = $CertificateThumbprint }
+    $ctx.ProfileName = $conn.ProfileName
+    if ($appOnly) { $ctx.ClientId = $conn.ClientId; $ctx.CertificateThumbprint = $conn.CertificateThumbprint }
     if (-not $PSCmdlet.ShouldProcess($ctx.OutputPath, 'Create access report')) { return }
     Initialize-TarStore -Context $ctx -Resume:$Resume
     Initialize-TarLog -Path (Get-TarStorePath $ctx $script:TarFile.Log)
+    $via = if ($conn.ProfileName) { "profile '$($conn.ProfileName)'" } else { 'parameters' }
+    Write-TarLog "Connection: $($conn.AuthMode), tenant $(if ($conn.TenantId) { $conn.TenantId } else { '<chosen at sign-in>' }) via $via"
 
     try {
-        Connect-TarGraph -Context $ctx -TenantId $TenantId
+        Connect-TarGraph -Context $ctx -TenantId $conn.TenantId
         if ($interactive -and -not $Force -and -not (Read-TarYesNo "Continue with tenant '$($ctx.TenantName ?? $ctx.TenantId)' ($($ctx.TenantDomain ?? $ctx.TenantId))?")) {
             Write-TarLog 'Cancelled at tenant confirmation.' -Level WARN
             return

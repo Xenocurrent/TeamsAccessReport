@@ -9,6 +9,14 @@ function Initialize-TarLog {
     $script:TarLogPath = $Path
 }
 
+function Clear-TarLogTarget {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Resets an in-memory module variable only.')]
+    # Detaches the file sink so entries from a later command never land in a previous run's run.jsonl.
+    [CmdletBinding()]
+    param()
+    $script:TarLogPath = $null
+}
+
 function Write-TarLog {
     [CmdletBinding()]
     param(

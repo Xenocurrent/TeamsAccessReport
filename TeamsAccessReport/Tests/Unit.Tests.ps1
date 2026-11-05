@@ -3,11 +3,11 @@
 }
 
 Describe 'Module surface' {
-    It 'exports exactly one public function' {
-        (Get-Command -Module TeamsAccessReport).Name | Should -Be @('Invoke-TeamsAccessReport')
+    It 'exports the report command and the profile commands' {
+        (Get-Command -Module TeamsAccessReport).Name | Sort-Object | Should -Be @('Get-TeamsAccessReportProfile', 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile')
     }
-    It 'has the Delegated and AppOnly parameter sets' {
-        (Get-Command Invoke-TeamsAccessReport).ParameterSets.Name | Sort-Object | Should -Be @('AppOnly', 'Delegated')
+    It 'has no mandatory parameters (everything missing is asked for or resolved)' {
+        @((Get-Command Invoke-TeamsAccessReport).Parameters.Values | Where-Object { $_.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory } }).Count | Should -Be 0
     }
     It 'the worker process never references the Graph SDK (assembly conflict)' {
         foreach ($f in 'Worker/Invoke-SharePointScan.ps1', 'Private/SharePointScan.ps1', 'Private/Store.ps1', 'Private/Util.ps1', 'Private/Logging.ps1') {
@@ -274,5 +274,242 @@ Describe 'CSV column contract' {
             Set-Content (Join-Path $p $script:TarFile.Drift) '"SiteUrl","Site","SiteKind","Finding","Severity","UserId"'
             { Initialize-TarStore -Context $c -Resume } | Should -Throw -ExpectedMessage '*incompatible version*'
         }
+    }
+}
+
+Describe 'ConvertTo-TarTenantQuery' {
+    It '<In> -> <Out>' -ForEach @(
+        @{ In = 'contoso'; Out = 'contoso.onmicrosoft.com' }
+        @{ In = ' Contoso.OnMicrosoft.com '; Out = 'contoso.onmicrosoft.com' }
+        @{ In = 'contoso.com'; Out = 'contoso.com' }
+        @{ In = 'admin@Contoso.com'; Out = 'contoso.com' }
+        @{ In = 'https://login.microsoftonline.com/'; Out = 'login.microsoftonline.com' }
+        @{ In = '3C28C7A0-9A0A-435D-B574-9345D1A794F7'; Out = '3c28c7a0-9a0a-435d-b574-9345d1a794f7' }
+        @{ In = '"etherlinked"'; Out = 'etherlinked.onmicrosoft.com' }
+    ) { InModuleScope TeamsAccessReport -Parameters @{ i = $In } { ConvertTo-TarTenantQuery -InputText $i } | Should -Be $Out }
+    It 'rejects <_>' -ForEach @('', '   ', 'two words', 'bad_name', '-contoso', 'contoso..com') {
+        InModuleScope TeamsAccessReport -Parameters @{ i = $_ } { ConvertTo-TarTenantQuery -InputText $i } | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Resolve-TarTenant' {
+    It 'reads the tenant ID from the issuer' {
+        InModuleScope TeamsAccessReport {
+            Mock Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = 'https://login.microsoftonline.com/3C28C7A0-9A0A-435D-B574-9345D1A794F7/v2.0'; tenant_region_scope = 'EU'; cloud_instance_name = 'microsoftonline.com' } } }
+            $r = Resolve-TarTenant -Tenant 'etherlinked'
+            $r.TenantId | Should -Be '3c28c7a0-9a0a-435d-b574-9345d1a794f7'; $r.Query | Should -Be 'etherlinked.onmicrosoft.com'; $r.Region | Should -Be 'EU'
+        }
+    }
+    It 'retries transient failures with backoff, then gives up as Unavailable' {
+        InModuleScope TeamsAccessReport {
+            Mock Start-Sleep { }
+            Mock Write-TarLog { }
+            Mock Invoke-TarHttpRaw { throw 'No such host is known.' }
+            $e = $null
+            try { Resolve-TarTenant -Tenant 'contoso' -MaxRetries 3 } catch { $e = $_ }
+            $e.Exception.Data['TarReason'] | Should -Be 'Unavailable'
+            Should -Invoke Invoke-TarHttpRaw -Times 3 -Exactly
+            Should -Invoke Start-Sleep -Times 2 -Exactly
+        }
+    }
+    It 'passes the input through when the lookup is unavailable, but not when the tenant does not exist' {
+        InModuleScope TeamsAccessReport {
+            Mock Start-Sleep { }
+            Mock Write-TarLog { }
+            Mock Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 503; Body = $null } }
+            (Resolve-TarTenantOrPassThrough -Tenant 'contoso').TenantId | Should -Be 'contoso.onmicrosoft.com'
+            Mock Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 400; Body = $null } }
+            { Resolve-TarTenantOrPassThrough -Tenant 'contoso' } | Should -Throw -ExpectedMessage '*not found*'
+        }
+    }
+}
+
+Describe 'Profile record validation' {
+    It 'normalizes thumbprint and client ID' {
+        InModuleScope TeamsAccessReport {
+            $r = New-TarProfileRecord -Name 'a' -TenantId 't' -AuthMode AppOnly -ClientId ' 9D35D536-264B-43BE-B838-1E34F2702154 ' -CertificateThumbprint "`u{200E}c5 f0 51 e8 5f c0 59 df 7b 30 84 b4 36 03 7e e2 51 62 b1 81"
+            $r.ClientId | Should -Be '9d35d536-264b-43be-b838-1e34f2702154'
+            $r.CertificateThumbprint | Should -Be 'C5F051E85FC059DF7B3084B436037EE25162B181'
+        }
+    }
+    It 'rejects <Name>' -ForEach @(
+        @{ Name = 'a bad profile name'; Splat = @{ Name = 'a b'; AuthMode = 'Delegated' }; Pattern = '*invalid*' }
+        @{ Name = 'app-only without certificate'; Splat = @{ Name = 'a'; AuthMode = 'AppOnly'; ClientId = '9d35d536-264b-43be-b838-1e34f2702154' }; Pattern = '*both*' }
+        @{ Name = 'a short thumbprint'; Splat = @{ Name = 'a'; AuthMode = 'AppOnly'; ClientId = '9d35d536-264b-43be-b838-1e34f2702154'; CertificateThumbprint = 'ABC' }; Pattern = '*40 hexadecimal*' }
+        @{ Name = 'a non-GUID client ID'; Splat = @{ Name = 'a'; AuthMode = 'AppOnly'; ClientId = 'app'; CertificateThumbprint = ('AB' * 20) }; Pattern = '*must be a GUID*' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ s = $Splat; pattern = $Pattern } { { New-TarProfileRecord -TenantId 't' @s } | Should -Throw -ExpectedMessage $pattern }
+    }
+    It 'stores no secrets and round-trips through the store atomically' {
+        InModuleScope TeamsAccessReport -Parameters @{ path = (Join-Path $TestDrive 'p' 'profiles.json') } {
+            $env:TEAMSACCESSREPORT_PROFILE_PATH = $path
+            try {
+                Mock Write-TarLog { }
+                Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'b' -TenantId 't2' -AuthMode Delegated)
+                Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'a' -TenantId 't1' -AuthMode AppOnly -ClientId '9d35d536-264b-43be-b838-1e34f2702154' -CertificateThumbprint ('AB' * 20))
+                Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'b' -TenantId 't3' -AuthMode Delegated)
+                $all = @(Read-TarProfileStore)
+                $all.Name | Should -Be @('a', 'b'); ($all | Where-Object Name -eq 'b').TenantId | Should -Be 't3'
+                (Get-Content $path -Raw) | Should -Not -Match '(?i)secret|password|privatekey'
+                @(Get-ChildItem (Split-Path $path) -Filter '*.tmp').Count | Should -Be 0
+            } finally { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH }
+        }
+    }
+}
+
+Describe 'Resolve-TarConnection precedence' {
+    BeforeAll {
+        $script:store = Join-Path $TestDrive 'prec.json'
+        $env:TEAMSACCESSREPORT_PROFILE_PATH = $script:store
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }
+            Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'one' -TenantId 'aaaaaaaa-0000-0000-0000-000000000001' -AuthMode AppOnly -ClientId '9d35d536-264b-43be-b838-1e34f2702154' -CertificateThumbprint ('AB' * 20))
+        }
+    }
+    AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    It 'resume: uses the single saved profile for the resumed tenant' {
+        InModuleScope TeamsAccessReport {
+            Mock Assert-TarCertificate { }
+            $c = Resolve-TarConnection -ResumeSelection ([pscustomobject]@{ TenantId = 'aaaaaaaa-0000-0000-0000-000000000001' })
+            $c.ProfileName | Should -Be 'one'; $c.AuthMode | Should -Be 'AppOnly'
+        }
+    }
+    It 'resume: falls back to delegated for a tenant without a profile' {
+        InModuleScope TeamsAccessReport {
+            $c = Resolve-TarConnection -ResumeSelection ([pscustomobject]@{ TenantId = 'bbbbbbbb-0000-0000-0000-000000000002' })
+            $c.AuthMode | Should -Be 'Delegated'; $c.TenantId | Should -Be 'bbbbbbbb-0000-0000-0000-000000000002'
+        }
+    }
+    It 'no parameters and no console: delegated, tenant chosen at sign-in' {
+        InModuleScope TeamsAccessReport { $c = Resolve-TarConnection; $c.AuthMode | Should -Be 'Delegated'; $c.TenantId | Should -BeNullOrEmpty }
+    }
+    It 'only one of -ClientId/-CertificateThumbprint fails' {
+        InModuleScope TeamsAccessReport { { Resolve-TarConnection -ClientId '9d35d536-264b-43be-b838-1e34f2702154' -TenantId 't' } | Should -Throw -ExpectedMessage '*both -ClientId and -CertificateThumbprint*' }
+    }
+}
+
+Describe 'Assert-TarCertificate' {
+    It '<Name>' -ForEach @(
+        @{ Name = 'no private key'; Row = @{ HasPrivateKey = $false; Valid = $true }; Pattern = '*no private key*' }
+        @{ Name = 'expired'; Row = @{ HasPrivateKey = $true; Valid = $false }; Pattern = '*not valid now*' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ row = $Row; pattern = $Pattern } {
+            Mock Get-TarCertificateCandidate { [pscustomobject](@{ Id = 'X'; Subject = 'CN=x'; Expires = '2020-01-01'; Store = 'CurrentUser\My' } + $row) }
+            { Assert-TarCertificate -Thumbprint 'X' } | Should -Throw -ExpectedMessage $pattern
+        }
+    }
+    It 'lists real store certificates without throwing (smoke)' { InModuleScope TeamsAccessReport { { @(Get-TarCertificateCandidate) } | Should -Not -Throw } }
+}
+
+Describe 'Interactive connection flow (simulated answers)' {
+    BeforeAll {
+        $env:TEAMSACCESSREPORT_PROFILE_PATH = Join-Path $TestDrive 'ui.json'
+        $script:okDiscovery = { [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = 'https://login.microsoftonline.com/3c28c7a0-9a0a-435d-b574-9345d1a794f7/v2.0'; tenant_region_scope = 'EU'; cloud_instance_name = 'microsoftonline.com' } } }
+    }
+    AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    BeforeEach { Remove-Item $env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+
+    It 'tenant prompt: retries after an unknown tenant, then accepts a short name' {
+        InModuleScope TeamsAccessReport -Parameters @{ ok = $script:okDiscovery } {
+            Mock Write-Host { }
+            $script:answers = [System.Collections.Generic.Queue[string]]::new([string[]]@('', 'nope', 'etherlinked'))
+            Mock Read-Host { $script:answers.Dequeue() }
+            Mock Invoke-TarHttpRaw -ParameterFilter { $Uri -like '*/nope.onmicrosoft.com/*' } { [pscustomobject]@{ StatusCode = 400; Body = $null } }
+            Mock Invoke-TarHttpRaw -ParameterFilter { $Uri -like '*/etherlinked.onmicrosoft.com/*' } $ok
+            (Read-TarTenantInput).TenantId | Should -Be '3c28c7a0-9a0a-435d-b574-9345d1a794f7'
+            Should -Invoke Read-Host -Times 3 -Exactly
+        }
+    }
+    It 'tenant prompt: q cancels; Enter means "choose at sign-in" when allowed' {
+        InModuleScope TeamsAccessReport {
+            Mock Read-Host { 'q' }
+            Read-TarTenantInput | Should -BeNullOrEmpty
+            Mock Read-Host { '' }
+            $t = Read-TarTenantInput -AllowEmpty
+            $t | Should -Not -BeNullOrEmpty; $t.TenantId | Should -BeNullOrEmpty
+        }
+    }
+    It 'client ID prompt: rejects a non-GUID, then accepts' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-Host { }
+            $script:answers = [System.Collections.Generic.Queue[string]]::new([string[]]@('app', '9D35D536-264B-43BE-B838-1E34F2702154'))
+            Mock Read-Host { $script:answers.Dequeue() }
+            Read-TarGuidInput -Prompt 'x' | Should -Be '9d35d536-264b-43be-b838-1e34f2702154'
+            Mock Read-Host { 'q' }
+            Read-TarGuidInput -Prompt 'x' | Should -BeNullOrEmpty
+        }
+    }
+    It 'certificate picker: picks from the store, or falls back to typing when the store is empty' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-Host { }
+            Mock Get-TarCertificateCandidate { [pscustomobject]@{ Id = 'C5F051E85FC059DF7B3084B436037EE25162B181'; Subject = 'CN=TeamsAccessReport-Test'; Expires = '2027-11-05'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true } }
+            Mock Select-TarItem { $Rows[0] }
+            Select-TarCertificate -SelectionMode Menu | Should -Be 'C5F051E85FC059DF7B3084B436037EE25162B181'
+            Should -Invoke Select-TarItem -ParameterFilter { $Single } -Times 1 -Exactly
+            Mock Get-TarCertificateCandidate { }
+            $script:answers = [System.Collections.Generic.Queue[string]]::new([string[]]@('short', ('ab' * 20)))
+            Mock Read-Host { $script:answers.Dequeue() }
+            Select-TarCertificate -SelectionMode Menu | Should -Be ('AB' * 20)
+        }
+    }
+    It 'start screen without saved profiles runs the wizard and saves the profile' {
+        InModuleScope TeamsAccessReport -Parameters @{ ok = $script:okDiscovery } {
+            Mock Write-Host { }
+            Mock Write-TarLog { }
+            Mock Invoke-TarHttpRaw $ok
+            Mock Get-TarCertificateCandidate { [pscustomobject]@{ Id = ('AB' * 20); Subject = 'CN=t'; Expires = '2099-01-01'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true } }
+            # Select-TarItem: 1st call = sign-in method -> AppOnly, 2nd = certificate.
+            Mock Select-TarItem { $Rows[0] }
+            # Read-Host: tenant, client ID, save? (Read-TarYesNo), profile name (Enter = default).
+            $script:answers = [System.Collections.Generic.Queue[string]]::new([string[]]@('etherlinked', '9d35d536-264b-43be-b838-1e34f2702154', 'y', ''))
+            Mock Read-Host { $script:answers.Dequeue() }
+            $c = Select-TarConnection -SelectionMode Menu
+            $c.AuthMode | Should -Be 'AppOnly'; $c.TenantId | Should -Be '3c28c7a0-9a0a-435d-b574-9345d1a794f7'; $c.ProfileName | Should -Be 'etherlinked'
+            (@(Read-TarProfileStore)).Name | Should -Be @('etherlinked')
+        }
+    }
+    It 'wizard without saving returns a connection without a profile name' {
+        InModuleScope TeamsAccessReport -Parameters @{ ok = $script:okDiscovery } {
+            Mock Write-Host { }
+            Mock Invoke-TarHttpRaw $ok
+            Mock Select-TarItem { $Rows | Where-Object Id -eq 'Delegated' }
+            $script:answers = [System.Collections.Generic.Queue[string]]::new([string[]]@('etherlinked', 'n'))
+            Mock Read-Host { $script:answers.Dequeue() }
+            $c = Select-TarConnection -SelectionMode Menu
+            $c.AuthMode | Should -Be 'Delegated'; $c.ProfileName | Should -BeNullOrEmpty
+            @(Read-TarProfileStore).Count | Should -Be 0
+        }
+    }
+    It 'start screen with saved profiles: <Pick>' -ForEach @(
+        @{ Pick = 'profile:saved'; Mode = 'AppOnly'; Profile = 'saved' }
+        @{ Pick = 'delegated'; Mode = 'Delegated'; Profile = $null }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ pick = $Pick; mode = $Mode; prof = $Profile } {
+            Mock Write-TarLog { }
+            Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'saved' -TenantId 'aaaaaaaa-0000-0000-0000-000000000001' -AuthMode AppOnly -ClientId '9d35d536-264b-43be-b838-1e34f2702154' -CertificateThumbprint ('AB' * 20))
+            Mock Select-TarItem { $Rows | Where-Object Id -eq $pick }
+            Mock Read-Host { '' }
+            $c = Select-TarConnection -SelectionMode Menu
+            $c.AuthMode | Should -Be $mode; $c.ProfileName | Should -Be $prof
+            Should -Invoke Select-TarItem -ParameterFilter { $Single -and $Title -like 'Connection*' } -Times 1 -Exactly
+        }
+    }
+    It 'start screen: nothing picked cancels' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }
+            Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'saved' -TenantId 't' -AuthMode Delegated)
+            Mock Select-TarItem { }
+            Select-TarConnection -SelectionMode Menu | Should -BeNullOrEmpty
+        }
+    }
+    It 'New-TeamsAccessReportProfile without a console and without enough parameters fails clearly' {
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $false }
+        { New-TeamsAccessReportProfile -Tenant contoso } | Should -Throw -ExpectedMessage '*No interactive console*'
+        { New-TeamsAccessReportProfile -Tenant contoso -Delegated -ClientId x } | Should -Throw -ExpectedMessage '*cannot be combined*'
+    }
+    It 'Remove-TeamsAccessReportProfile -WhatIf keeps the profile' {
+        InModuleScope TeamsAccessReport { Mock Write-TarLog { }; Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'keep' -TenantId 't' -AuthMode Delegated) }
+        Remove-TeamsAccessReportProfile -Name keep -WhatIf
+        (Get-TeamsAccessReportProfile -Name 'ke*').Name | Should -Be 'keep'
     }
 }

@@ -63,13 +63,16 @@ function Select-TarItem {
     [CmdletBinding()]
     [OutputType([psobject])]
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows, [Parameter(Mandatory)][string]$Title,
-        [Parameter(Mandatory)][string[]]$Columns, [string]$Mode = 'Auto')
+        [Parameter(Mandatory)][string[]]$Columns, [string]$Mode = 'Auto', [switch]$Single)
     if ($Rows.Count -eq 0) { return }
     $resolved = Resolve-TarSelectionMode -Mode $Mode
     Write-TarLog "Selection '$Title' via $resolved ($($Rows.Count) options)" -Level DEBUG
     $picked = switch ($resolved) {
-        'Gui' { $Rows | Select-Object -Property (@($Columns) + 'Id') | Out-GridView -Title "$Title (Ctrl/Shift for multi-select)" -OutputMode Multiple }
-        'ConsoleGrid' { $Rows | Select-Object -Property (@($Columns) + 'Id') | Out-ConsoleGridView -Title $Title -OutputMode Multiple }
+        'Gui' {
+            $hint = if ($Single) { '' } else { ' (Ctrl/Shift for multi-select)' }
+            $Rows | Select-Object -Property (@($Columns) + 'Id') | Out-GridView -Title "$Title$hint" -OutputMode ($Single ? 'Single' : 'Multiple')
+        }
+        'ConsoleGrid' { $Rows | Select-Object -Property (@($Columns) + 'Id') | Out-ConsoleGridView -Title $Title -OutputMode ($Single ? 'Single' : 'Multiple') }
         default { Select-TarFromMenu -Rows $Rows -Title $Title -Columns $Columns }
     }
     $ids = @($picked | ForEach-Object { $_.Id })
@@ -135,11 +138,12 @@ function Save-TarSelection {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][hashtable]$Selection)
     $teams = $Selection.Teams; $filter = $Selection.ChannelFilter
-    $rerun = "Invoke-TeamsAccessReport -TenantId '$($Context.TenantId)' -TeamId " + ((@($teams | ForEach-Object { "'$($_.id)'" })) -join ',')
+    $connection = if ($Context.ProfileName) { "-ProfileName '$($Context.ProfileName)'" } else { "-TenantId '$($Context.TenantId)'" }
+    $rerun = "Invoke-TeamsAccessReport $connection -TeamId " + ((@($teams | ForEach-Object { "'$($_.id)'" })) -join ',')
     if ($filter.Count) { $rerun += ' -ChannelId ' + ((@($filter.Values | ForEach-Object { $_ } | Select-Object -Unique | ForEach-Object { "'$_'" })) -join ',') }
-    if ($Context.AppOnly) { $rerun += " -ClientId '$($Context.ClientId)' -CertificateThumbprint '$($Context.CertificateThumbprint)'" }
+    if ($Context.AppOnly -and -not $Context.ProfileName) { $rerun += " -ClientId '$($Context.ClientId)' -CertificateThumbprint '$($Context.CertificateThumbprint)'" }
     [pscustomobject]@{
-        SchemaVersion = $script:TarSelectionSchemaVersion; TenantId = $Context.TenantId; TenantName = $Context.TenantName; TenantDomain = $Context.TenantDomain; RunAt = (Get-Date).ToString('o')
+        SchemaVersion = $script:TarSelectionSchemaVersion; TenantId = $Context.TenantId; TenantName = $Context.TenantName; TenantDomain = $Context.TenantDomain; ProfileName = $Context.ProfileName; RunAt = (Get-Date).ToString('o')
         Teams = @($teams | ForEach-Object {
                 $all = -not $filter.ContainsKey($_.id)
                 # Assigned via a typed variable: an if expression would unroll a one-element array into a scalar.
@@ -164,4 +168,132 @@ function Import-TarSelection {
         if (-not $all) { $filter[$t.Id] = [System.Collections.Generic.HashSet[string]]::new([string[]]@($t.ChannelIds | Where-Object { $_ })) }
     }
     @{ Teams = @($sel.Teams | ForEach-Object { @{ id = $_.Id; displayName = $_.Name } }); ChannelFilter = $filter }
+}
+
+
+# --- Connection prompts (data logic in Connection.ps1) ----------------------------------------------------
+
+function Test-TarCanPrompt {
+    # True when a person can answer prompts. Single seam so tests never block on Read-Host.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    -not [Console]::IsInputRedirected -and [Environment]::UserInteractive
+}
+
+function Read-TarTenantInput {
+    # Asks for a tenant until it resolves. Accepts a name (contoso), a domain, an e-mail address or a tenant ID.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive prompt feedback requires direct console output.')]
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([switch]$AllowEmpty)
+    while ($true) {
+        $hint = if ($AllowEmpty) { 'Enter = choose at sign-in, ' } else { '' }
+        $answer = (Read-Host "Tenant (e.g. contoso, contoso.com, admin@contoso.com or tenant ID; ${hint}q = cancel)").Trim()
+        if ($answer -eq 'q') { return }
+        if (-not $answer) { if ($AllowEmpty) { return [pscustomobject]@{ TenantId = $null; Query = $null; Region = $null; Cloud = $null } }; continue }
+        try {
+            $t = Resolve-TarTenantOrPassThrough -Tenant $answer
+            Write-Host "  -> $($t.Query) = tenant $($t.TenantId)$(if ($t.Region) { " (region $($t.Region))" })" -ForegroundColor Green
+            return $t
+        } catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow }
+    }
+}
+
+function Read-TarGuidInput {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive prompt feedback requires direct console output.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Prompt)
+    while ($true) {
+        $answer = (Read-Host "$Prompt (q = cancel)").Trim()
+        if ($answer -eq 'q') { return }
+        try { return (ConvertTo-TarClientId $answer) } catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow }
+    }
+}
+
+function Select-TarCertificate {
+    # Pop-up/menu over usable certificates; falls back to typing a thumbprint when none are found.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive prompt feedback requires direct console output.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$SelectionMode = 'Auto')
+    $rows = @(Get-TarCertificateCandidate | Where-Object { $_.HasPrivateKey -and $_.Valid })
+    while ($rows.Count) {
+        $picked = @(Select-TarItem -Rows $rows -Title 'Certificate for app-only sign-in (pick one)' -Columns 'Subject', 'Expires', 'Store' -Mode $SelectionMode -Single)
+        if ($picked.Count -eq 1) { Write-Host "  -> $($picked[0].Subject) ($($picked[0].Id))" -ForegroundColor Green; return $picked[0].Id }
+        if ($picked.Count -eq 0) { break }
+        Write-Host '  Pick exactly one certificate.' -ForegroundColor Yellow
+    }
+    if (-not $rows.Count) { Write-Host '  No certificate with a private key was found in CurrentUser\My or LocalMachine\My.' -ForegroundColor Yellow }
+    while ($true) {
+        $answer = (Read-Host 'Certificate thumbprint (q = cancel)').Trim()
+        if ($answer -eq 'q') { return }
+        try { return (ConvertTo-TarThumbprint $answer) } catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow }
+    }
+}
+
+function Read-TarConnectionWizard {
+    # Creates a connection (and optionally saves it as a profile). Returns a profile record, or $null when cancelled.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive prompt feedback requires direct console output.')]
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([string]$Name, [string]$Tenant, [ValidateSet('', 'AppOnly', 'Delegated')][string]$AuthMode = '', [string]$ClientId,
+        [string]$CertificateThumbprint, [string]$PnPClientId, [string]$SelectionMode = 'Auto', [switch]$OfferSave)
+    Write-Host ''
+    Write-Host '=== New connection ===' -ForegroundColor Cyan
+    $t = if ($Tenant) { Resolve-TarTenantOrPassThrough -Tenant $Tenant } else { Read-TarTenantInput }
+    if (-not $t) { return }
+    if (-not $AuthMode) {
+        $modes = @(
+            [pscustomobject]@{ Id = 'AppOnly'; Mode = 'App-only (certificate)'; Note = 'Complete picture; needs an Entra app with application permissions' }
+            [pscustomobject]@{ Id = 'Delegated'; Mode = 'Delegated (sign in as yourself)'; Note = 'Limited by your own role' }
+        )
+        $m = @(Select-TarItem -Rows $modes -Title 'Sign-in method (pick one)' -Columns 'Mode', 'Note' -Mode $SelectionMode -Single)
+        if ($m.Count -ne 1) { return }
+        $AuthMode = $m[0].Id
+    }
+    if ($AuthMode -eq 'AppOnly') {
+        if (-not $ClientId) { $ClientId = Read-TarGuidInput -Prompt 'Application (client) ID of the Entra app'; if (-not $ClientId) { return } }
+        if (-not $CertificateThumbprint) { $CertificateThumbprint = Select-TarCertificate -SelectionMode $SelectionMode; if (-not $CertificateThumbprint) { return } }
+    }
+    if (-not $Name) { $Name = (($t.Query ?? 'tenant') -split '\.')[0] }
+    $record = New-TarProfileRecord -Name $Name -TenantId $t.TenantId -TenantQuery $t.Query -AuthMode $AuthMode -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -PnPClientId $PnPClientId
+    if ($OfferSave -and (Read-TarYesNo "Save as profile '$Name' for next time (no secrets are stored)?")) {
+        $custom = (Read-Host "Profile name [Enter = $Name]").Trim()
+        if ($custom) { $record = New-TarProfileRecord -Name $custom -TenantId $t.TenantId -TenantQuery $t.Query -AuthMode $AuthMode -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -PnPClientId $PnPClientId }
+        Save-TarProfile -ProfileRecord $record
+        Write-Host "  Next time: Invoke-TeamsAccessReport -ProfileName $($record.Name)" -ForegroundColor Green
+    }
+    $record
+}
+
+function Select-TarConnection {
+    # Start screen when no connection parameters were given: saved profiles, new connection, or delegated.
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([string]$SelectionMode = 'Auto')
+    $saved = @(Read-TarProfileStore)
+    $rows = @($saved | ForEach-Object { [pscustomobject]@{ Id = "profile:$($_.Name)"; Connection = $_.Name; Tenant = ($_.TenantQuery ?? $_.TenantId); Method = $_.AuthMode } })
+    $rows += [pscustomobject]@{ Id = 'new'; Connection = '<New connection...>'; Tenant = 'enter tenant, app and certificate once'; Method = '' }
+    $rows += [pscustomobject]@{ Id = 'delegated'; Connection = '<Sign in as myself>'; Tenant = 'delegated, nothing saved'; Method = 'Delegated' }
+    # @() around the whole if: an if expression unrolls an empty array to $null (strict mode then fails on .Count).
+    $pick = @(if ($saved.Count -eq 0) { $rows | Where-Object Id -eq 'new' } else { Select-TarItem -Rows $rows -Title 'Connection (pick one)' -Columns 'Connection', 'Tenant', 'Method' -Mode $SelectionMode -Single })
+    if ($pick.Count -ne 1) { Write-TarLog 'No connection selected.' -Level WARN; return }
+    switch -Regex ($pick[0].Id) {
+        '^profile:(.+)$' { return ConvertFrom-TarProfile (Get-TarProfile -Name $Matches[1]) }
+        '^new$' {
+            $r = Read-TarConnectionWizard -SelectionMode $SelectionMode -OfferSave
+            if (-not $r) { return }
+            $c = ConvertFrom-TarProfile $r
+            # Not saved -> no profile name (so Selection.json does not point at a profile that does not exist).
+            if (@(Read-TarProfileStore | Where-Object Name -eq $r.Name).Count -eq 0) { $c.ProfileName = $null }
+            return $c
+        }
+        default {
+            $t = Read-TarTenantInput -AllowEmpty
+            if (-not $t) { return }
+            return [pscustomobject]@{ AuthMode = 'Delegated'; TenantId = $t.TenantId; ClientId = $null; CertificateThumbprint = $null; PnPClientId = $null; ProfileName = $null }
+        }
+    }
 }

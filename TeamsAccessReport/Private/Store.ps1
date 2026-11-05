@@ -12,7 +12,7 @@ function New-TarContext {
     [pscustomobject]@{
         OutputPath = $full; StateDir = (Join-Path $full 'state'); GraphBase = 'https://graph.microsoft.com/v1.0'
         TenantId = $null; TenantName = $null; TenantDomain = $null; InitialDomain = $null; AuthType = $null
-        AppOnly = $false; ClientId = $null; CertificateThumbprint = $null
+        AppOnly = $false; ClientId = $null; CertificateThumbprint = $null; ProfileName = $null
         MaxRetries = $MaxRetries; BaseDelaySeconds = $BaseDelaySeconds; MaxItemsPerList = $MaxItemsPerList; MaxSubwebDepth = $MaxSubwebDepth
     }
 }
