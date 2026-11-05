@@ -9,7 +9,9 @@ BeforeAll {
     }
     InModuleScope TeamsAccessReport { $script:TarSharePointExecutionMode = 'InProcess' }
 
-    $script:AppArgs = @{ TenantId = 'contoso.onmicrosoft.com'; ClientId = 'app'; CertificateThumbprint = 'thumb'; Force = $true; InformationAction = 'SilentlyContinue'; WarningAction = 'SilentlyContinue' }
+    # Profiles go to TestDrive, never to the real per-user store.
+    $env:TEAMSACCESSREPORT_PROFILE_PATH = Join-Path $TestDrive 'profiles.json'
+    $script:AppArgs = @{ TenantId = 'contoso.onmicrosoft.com'; ClientId = '22222222-2222-2222-2222-222222222222'; CertificateThumbprint = 'AB' * 20; Force = $true; InformationAction = 'SilentlyContinue'; WarningAction = 'SilentlyContinue' }
 
     function Set-TarTestMocks {
         Mock -ModuleName TeamsAccessReport Invoke-TarGraphRaw { Get-TestGraphResponse -Uri $Uri }
@@ -20,8 +22,13 @@ BeforeAll {
         Mock -ModuleName TeamsAccessReport Set-MgRequestContext { }
         Mock -ModuleName TeamsAccessReport Get-MgContext { [pscustomobject]@{ TenantId = '11111111-1111-1111-1111-111111111111'; Account = $null; AppName = 'TestApp'; AuthType = 'AppOnly'; Scopes = @('Team.ReadBasic.All', 'Channel.ReadBasic.All', 'TeamMember.Read.All', 'ChannelMember.Read.All', 'Files.Read.All', 'GroupMember.Read.All', 'User.Read.All') } }
         Mock -ModuleName TeamsAccessReport Start-Sleep { }
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $false }
+        Mock -ModuleName TeamsAccessReport Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = 'https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0'; tenant_region_scope = 'EU'; cloud_instance_name = 'microsoftonline.com' } } }
+        Mock -ModuleName TeamsAccessReport Get-TarCertificateCandidate { [pscustomobject]@{ Id = 'AB' * 20; Subject = 'CN=Test'; Expires = '2099-01-01'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true; NotAfter = [datetime]'2099-01-01' } }
     }
 }
+
+AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
 
 Describe 'Full run (app-only, SharePoint, external associations)' {
     BeforeAll {
@@ -118,9 +125,12 @@ Describe 'Validation and safeguards' {
     ) {
         { Invoke-TeamsAccessReport @Splat -OutputPath (Join-Path $TestDrive ([guid]::NewGuid())) -WarningAction SilentlyContinue } | Should -Throw -ExpectedMessage "*$Pattern*"
     }
-    It 'app-only requires TenantId (parameter set metadata; not invoked because it would prompt interactively)' {
-        $attr = (Get-Command Invoke-TeamsAccessReport).Parameters['TenantId'].Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.ParameterSetName -eq 'AppOnly' }
-        $attr.Mandatory | Should -BeTrue
+    It 'app-only without a tenant fails clearly when nobody can be prompted' {
+        { Invoke-TeamsAccessReport -ClientId $AppArgs.ClientId -CertificateThumbprint $AppArgs.CertificateThumbprint -AllTeams -OutputPath (Join-Path $TestDrive 'notenant') } |
+            Should -Throw -ExpectedMessage '*needs a tenant*'
+    }
+    It '-ProfileName cannot be combined with explicit connection parameters' {
+        { Invoke-TeamsAccessReport -ProfileName x -TenantId contoso -AllTeams -OutputPath (Join-Path $TestDrive 'mix') } | Should -Throw -ExpectedMessage '*either -ProfileName*'
     }
     It 'refuses to overwrite an existing run' {
         $p = Join-Path $TestDrive 'dup'
@@ -142,5 +152,47 @@ Describe 'Validation and safeguards' {
     It 'refuses to run when PnP.PowerShell is already loaded' {
         Mock -ModuleName TeamsAccessReport Get-Module -ParameterFilter { $Name -eq 'PnP.PowerShell' -and -not $ListAvailable } { [pscustomobject]@{ Name = 'PnP.PowerShell' } }
         { Invoke-TeamsAccessReport @AppArgs -AllTeams -OutputPath (Join-Path $TestDrive 'pnp') } | Should -Throw -ExpectedMessage '*PnP.PowerShell is loaded*'
+    }
+}
+
+Describe 'Connection profiles end to end' {
+    BeforeAll { Reset-TarTestState; Set-TarTestMocks; Remove-Item $env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    It 'creates a profile from a short tenant name, resolving it to the tenant ID' {
+        $p = New-TeamsAccessReportProfile -Tenant 'contoso' -ClientId $AppArgs.ClientId -CertificateThumbprint ("`u{200E}" + ('ab ' * 20)) -InformationAction SilentlyContinue
+        $p.Name | Should -Be 'contoso'; $p.TenantId | Should -Be '11111111-1111-1111-1111-111111111111'; $p.TenantQuery | Should -Be 'contoso.onmicrosoft.com'
+        $p.CertificateThumbprint | Should -Be ('AB' * 20)
+        Should -Invoke -ModuleName TeamsAccessReport Invoke-TarHttpRaw -ParameterFilter { $Uri -eq 'https://login.microsoftonline.com/contoso.onmicrosoft.com/v2.0/.well-known/openid-configuration' }
+        (Get-TeamsAccessReportProfile).Name | Should -Be @('contoso')
+    }
+    It 'refuses to overwrite without -Force' {
+        { New-TeamsAccessReportProfile -Tenant 'contoso' -ClientId $AppArgs.ClientId -CertificateThumbprint $AppArgs.CertificateThumbprint } | Should -Throw -ExpectedMessage '*already exists*'
+    }
+    It 'runs with -ProfileName only and records it for -Resume and the rerun command' {
+        $out = Join-Path $TestDrive 'byprofile'
+        $s = Invoke-TeamsAccessReport -ProfileName contoso -AllTeams -Force -OutputPath $out -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $s.ResultStatus | Should -Be 'Complete'
+        Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -ParameterFilter { $TenantId -eq '11111111-1111-1111-1111-111111111111' -and $ClientId -eq '22222222-2222-2222-2222-222222222222' }
+        $sel = Get-Content (Join-Path $out 'Selection.json') -Raw | ConvertFrom-Json
+        $sel.ProfileName | Should -Be 'contoso'
+        $sel.RerunCommand | Should -Match "-ProfileName 'contoso'"; $sel.RerunCommand | Should -Not -Match 'CertificateThumbprint'
+    }
+    It '-Resume without any connection parameter picks the profile from Selection.json' {
+        $out = Join-Path $TestDrive 'byprofile'
+        $s = Invoke-TeamsAccessReport -Resume -OutputPath $out -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $s.ResultStatus | Should -Be 'Complete'
+        (Get-Content (Join-Path $out 'run.jsonl') -Raw) | Should -Match "via profile 'contoso'"
+    }
+    It 'a missing certificate fails before sign-in with the reason' {
+        Mock -ModuleName TeamsAccessReport Get-TarCertificateCandidate { }
+        { Invoke-TeamsAccessReport -ProfileName contoso -AllTeams -Force -OutputPath (Join-Path $TestDrive 'nocert') } | Should -Throw -ExpectedMessage '*was not found in CurrentUser*'
+    }
+    It 'an unknown tenant fails with a clear message' {
+        Mock -ModuleName TeamsAccessReport Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 400; Body = [pscustomobject]@{ error = 'invalid_tenant' } } }
+        { New-TeamsAccessReportProfile -Name nope -Tenant 'doesnotexist' -Delegated } | Should -Throw -ExpectedMessage "*'doesnotexist.onmicrosoft.com' was not found*"
+    }
+    It 'removes a profile' {
+        Remove-TeamsAccessReportProfile -Name contoso -Confirm:$false -InformationAction SilentlyContinue
+        @(Get-TeamsAccessReportProfile).Count | Should -Be 0
+        { Invoke-TeamsAccessReport -ProfileName contoso -AllTeams -OutputPath (Join-Path $TestDrive 'gone') } | Should -Throw -ExpectedMessage "*'contoso' not found*"
     }
 }

@@ -1,5 +1,25 @@
 ﻿# Changelog
 
+## 2.1.0 – 2026-11-05
+### Added
+- Connection profiles: `New-TeamsAccessReportProfile`, `Get-TeamsAccessReportProfile`, `Remove-TeamsAccessReportProfile`
+  and `Invoke-TeamsAccessReport -ProfileName` (tab completion). Profiles store identifiers only, never secrets.
+- Start screen when `Invoke-TeamsAccessReport` runs without connection parameters: saved connection, new connection
+  (tenant, sign-in method, app ID, certificate picked from the store, optional save) or delegated sign-in.
+- Tenant input accepts `contoso`, `contoso.com`, `admin@contoso.com` or a tenant ID; it is resolved to the tenant ID via
+  the public OpenID discovery document (3 attempts with backoff + jitter). If the service is unreachable the input is
+  passed on to the sign-in with a WARN; an unknown tenant fails immediately.
+- App-only certificates are checked before sign-in (present, private key, valid now) with a precise error.
+- `-Resume` without connection parameters reuses the profile recorded in `Selection.json`.
+
+### Changed
+- `Invoke-TeamsAccessReport` has no parameter sets and no mandatory parameters; combinations are validated in code.
+  Existing explicit calls (`-TenantId -ClientId -CertificateThumbprint`) work unchanged.
+- `-ClientId` must be a GUID and `-CertificateThumbprint` 40 hex characters; spaces and invisible characters copied
+  from certmgr are removed.
+- `Selection.json` records `ProfileName`; `RerunCommand` uses `-ProfileName` instead of IDs when a profile was used.
+- Log entries from a new command no longer append to the previous run's `run.jsonl` in the same session.
+
 ## 2.0.4 – 2026-11-05
 ### Added
 - `DriftReport.csv` has a new column `Cause`. `PublicTeamDefault` marks "Everyone except external users" in the

@@ -36,6 +36,11 @@ $script:TarColumns = @{
 # Selection.json schema written by this version. Import accepts 1 (ChannelIds = 'ALL' | id | [ids]) and 2.
 $script:TarSelectionSchemaVersion = 2
 
+# Public Entra authority (global cloud) used for unauthenticated tenant discovery.
+$script:TarAuthority = 'https://login.microsoftonline.com'
+# profiles.json schema written by this version.
+$script:TarProfileSchemaVersion = 1
+
 $script:TarCheckpoint = @{
     Graph      = 'graph-completed.txt'
     SharePoint = 'sp-completed.txt'

@@ -6,17 +6,48 @@ resolution of group claims to users, and drift between Teams and SharePoint.
 
 ```powershell
 Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
-$s = Invoke-TeamsAccessReport -TenantId '<TENANT_ID>' -ClientId '<APP_ID>' -CertificateThumbprint '<THUMBPRINT>' `
-        -AllTeams -Force -IncludeSharePoint -IncludeUserAssociations
+Invoke-TeamsAccessReport            # start screen: pick a saved connection or create one (asked once)
+```
+
+## Connecting to a tenant
+
+Nothing has to be edited in a command. Run `Invoke-TeamsAccessReport` without connection parameters and the start
+screen offers saved connections, **New connection…** or **Sign in as myself**. A new connection asks for:
+
+1. **Tenant** – type it the way you know it: `contoso`, `contoso.com`, `admin@contoso.com` or the tenant ID. It is
+   resolved to the tenant ID through Microsoft's public OpenID discovery document (no sign-in) and shown for confirmation.
+2. **Sign-in method** – app-only (certificate) or delegated.
+3. **App ID** and **certificate** (app-only) – the certificate is picked from `CurrentUser\My` / `LocalMachine\My`.
+4. **Save as profile?** – next time: `Invoke-TeamsAccessReport -ProfileName contoso` (tab-completes).
+
+Pickers are pop-ups (Out-GridView) on Windows and numbered menus elsewhere; `-SelectionMode Menu` forces the console.
+
+| Command | Purpose |
+|---|---|
+| `New-TeamsAccessReportProfile` | Create a profile (interactive, or fully with `-Tenant -ClientId -CertificateThumbprint`) |
+| `Get-TeamsAccessReportProfile` | List profiles |
+| `Remove-TeamsAccessReportProfile -Name x` | Delete a profile (the app and certificate are not touched) |
+
+Profiles hold identifiers only – tenant ID, app ID, certificate thumbprint – never secrets; the private key stays in the
+certificate store. Location: `%LOCALAPPDATA%\TeamsAccessReport\profiles.json` (Windows) or
+`~/.local/share/TeamsAccessReport/profiles.json`; override with `TEAMSACCESSREPORT_PROFILE_PATH`.
+
+Unattended runs still take explicit parameters, and `-TenantId` accepts the same short forms:
+
+```powershell
+$s = Invoke-TeamsAccessReport -ProfileName contoso -AllTeams -Force -IncludeSharePoint -IncludeUserAssociations
+$s = Invoke-TeamsAccessReport -TenantId contoso -ClientId '<APP_ID>' -CertificateThumbprint '<THUMBPRINT>' -AllTeams -Force
 $s.ResultStatus   # Complete | Incomplete
 ```
 
-Run `Get-Help Invoke-TeamsAccessReport -Full` for every parameter.
+`-Resume` needs no connection parameters: it reuses the profile recorded in `Selection.json` (or the only saved profile
+for that tenant). Run `Get-Help Invoke-TeamsAccessReport -Full` for every parameter.
 
 ## Architecture
 
 ```
-Invoke-TeamsAccessReport (Public)          orchestration, validation, parameter sets, try/finally
+Invoke-TeamsAccessReport (Public)          orchestration, validation, try/finally
+ ├─ Resolve-TarConnection       Connection.ps1 profile / parameters / start screen → tenant ID, app, certificate
  ├─ Connect-TarGraph            Graph.ps1      sign-in, tenant discovery, SDK retry
  ├─ Get/Import-TarTeamSelection Selection.ps1  interactive selection (UI isolated from logic)
  ├─ Phase 1 Invoke-TarTeamInventory   Inventory.ps1      Graph → Teams/TeamsAccess/Channels/Incoming.csv
@@ -32,11 +63,11 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 
 | Rule | Why |
 |---|---|
-| All Graph IO goes through `Invoke-TarGraphRaw`; all SharePoint IO through `Invoke-TarSpRaw` | One seam per external service; tests mock only these |
+| All Graph IO goes through `Invoke-TarGraphRaw`; all SharePoint IO through `Invoke-TarSpRaw`; tenant discovery through `Invoke-TarHttpRaw` | One seam per external service; tests mock only these |
 | No script-scope variables in logic; everything flows through `-Context` | Explicit dependencies, testable, PSScriptAnalyzer can verify parameter usage |
 | Phases communicate only through the files defined in `Constants.ps1` (`$script:TarFile`) | Each phase can be re-run or resumed in isolation; the files are a data contract |
 | Functions returning collections emit elements to the pipeline; callers wrap with `@(...)` | Avoids PowerShell's unary-comma/`$null` pitfalls (three v1 bugs came from here) |
-| UI (`Read-Host`, menu) lives only in `Selection.ps1` | Everything else runs unattended and is tested without a console |
+| UI (`Read-Host`, menu) lives only in `Selection.ps1`; `Test-TarCanPrompt` is the only console check | Everything else runs unattended and is tested without a console |
 | The worker never loads the Graph SDK | Known PnP ↔ Graph assembly conflict; a unit test verifies this at token level |
 
 ## Design decisions (short ADRs)
