@@ -666,3 +666,72 @@ Describe 'Start screen window (Windows Forms)' -Skip:(-not $IsWindows) {
         }
     }
 }
+
+Describe 'Select-TarItem routing' {
+    It 'Gui multi-select uses the check-box list and passes pre-checked IDs' {
+        InModuleScope TeamsAccessReport {
+            Mock Test-TarGuiAvailable { $true }
+            Mock Show-TarCheckList { $Rows | Where-Object { $_.Id -in $CheckedId } }
+            $rows = @([pscustomobject]@{ Id = 'a'; Name = 'A' }, [pscustomobject]@{ Id = 'b'; Name = 'B' })
+            @(Select-TarItem -Rows $rows -Title 't' -Columns 'Name' -Mode Gui -CheckedId 'b').Id | Should -Be @('b')
+            Should -Invoke Show-TarCheckList -Times 1 -Exactly
+        }
+    }
+}
+
+Describe 'Check-box list (Windows Forms)' -Skip:(-not $IsWindows) {
+    BeforeAll {
+        InModuleScope TeamsAccessReport { Add-Type -AssemblyName System.Windows.Forms, System.Drawing }
+        $script:teams = @(1..250 | ForEach-Object { [pscustomobject]@{ Id = "id$_"; Name = $(if ($_ % 50 -eq 0) { "Finance $_" } else { "Team $_" }); Visibility = 'private' } })
+    }
+    It 'starts with the pre-checked IDs, counts and enables OK accordingly' {
+        InModuleScope TeamsAccessReport -Parameters @{ rows = $script:teams } {
+            $ui = New-TarCheckListForm -Rows $rows -Title 't' -Columns 'Name', 'Visibility'
+            try {
+                $ui.List.Items.Count | Should -Be 250; $ui.Count.Text | Should -Be '0 of 250 selected'; $ui.Ok.Enabled | Should -BeFalse
+            } finally { $ui.Form.Dispose() }
+            $ui = New-TarCheckListForm -Rows $rows -Title 't' -Columns 'Name' -CheckedId 'id1', 'id2'
+            try { $ui.Count.Text | Should -Be '2 of 250 selected'; $ui.Ok.Enabled | Should -BeTrue; $ui.List.Items[0].Checked | Should -BeTrue } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'filter + Select all checks only visible rows and keeps them when the filter is cleared' {
+        InModuleScope TeamsAccessReport -Parameters @{ rows = $script:teams } {
+            $ui = New-TarCheckListForm -Rows $rows -Title 't' -Columns 'Name', 'Visibility'
+            try {
+                $ui.Filter.Text = 'finance'
+                $ui.List.Items.Count | Should -Be 5
+                Set-TarCheckListAll -Ui $ui -Checked $true
+                $ui.Count.Text | Should -Be '5 of 250 selected (245 hidden by filter)'
+                $ui.Filter.Text = ''
+                $ui.List.Items.Count | Should -Be 250
+                @($ui.List.Items | Where-Object Checked).Count | Should -Be 5
+                $ui.Checked.Contains('id50') | Should -BeTrue
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'a single row keeps all its columns (no array unrolling)' {
+        InModuleScope TeamsAccessReport {
+            $ui = New-TarCheckListForm -Rows @([pscustomobject]@{ Id = 'x'; Name = 'Only'; Visibility = 'public' }) -Title 't' -Columns 'Name', 'Visibility'
+            try { $ui.List.Items.Count | Should -Be 1; $ui.List.Items[0].SubItems[1].Text | Should -Be 'public' } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'checking an item updates the selection; Clear removes visible ones' {
+        InModuleScope TeamsAccessReport -Parameters @{ rows = $script:teams } {
+            $ui = New-TarCheckListForm -Rows $rows -Title 't' -Columns 'Name'
+            try {
+                $ui.List.Items[2].Checked = $true
+                $ui.Checked.Contains('id3') | Should -BeTrue; $ui.Count.Text | Should -Be '1 of 250 selected'
+                Set-TarCheckListAll -Ui $ui -Checked $false
+                $ui.Checked.Count | Should -Be 0; $ui.Ok.Enabled | Should -BeFalse
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'certificate text in the start window has no CN= prefix and a wide drop-down' {
+        InModuleScope TeamsAccessReport {
+            $c = @([pscustomobject]@{ Id = ('AB' * 20); Subject = 'CN=TeamsAccessReport-Test'; Expires = '2027-11-05'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true })
+            $ui = New-TarStartForm -Certificates $c
+            try { $ui.Certificate.Items[0] | Should -Be 'TeamsAccessReport-Test  (expires 2027-11-05, CurrentUser\My)'; $ui.Certificate.DropDownWidth | Should -BeGreaterOrEqual 560 }
+            finally { $ui.Form.Dispose() }
+        }
+    }
+}

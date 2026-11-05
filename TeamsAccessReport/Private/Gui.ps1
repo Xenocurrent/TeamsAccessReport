@@ -95,7 +95,9 @@ function New-TarStartForm {
     $ui.ClientId = [System.Windows.Forms.TextBox]@{ Width = $textWidth }
     Add-TarFormRow $tc 'App (client) ID' $ui.ClientId
     $ui.Certificate = [System.Windows.Forms.ComboBox]@{ DropDownStyle = 'DropDown'; Width = $textWidth }
-    foreach ($c in $ui.CertRows) { $null = $ui.Certificate.Items.Add("$($c.Subject)  -  expires $($c.Expires)  -  $($c.Store)") }
+    # Short display text (no 'CN=' prefix) and a wider drop-down so the store is never cut off.
+    foreach ($c in $ui.CertRows) { $null = $ui.Certificate.Items.Add("$($c.Subject -replace '^CN=', '')  (expires $($c.Expires), $($c.Store))") }
+    $ui.Certificate.DropDownWidth = [Math]::Max($textWidth, 560)
     Add-TarFormRow $tc 'Certificate' $ui.Certificate
     $ui.PnPClientId = [System.Windows.Forms.TextBox]@{ Width = $textWidth }
     Add-TarFormRow $tc 'PnP app ID (optional)' $ui.PnPClientId
@@ -270,5 +272,122 @@ function Show-TarStartForm {
         $answer = $ui.Form.ShowDialog()
         if ($answer -ne [System.Windows.Forms.DialogResult]::OK -or -not $ui.Result) { return }
         $ui.Result
+    } finally { $ui.Form.Dispose() }
+}
+
+# --- Multi-select list with check boxes (teams, channels) ---------------------------------------------------
+
+function New-TarCheckListForm {
+    # Builds (does not show) a check-box list: filter, Select all / Clear, "n of m selected", OK enabled when n > 0.
+    # Check state lives in $ui.Checked (HashSet of Id), so filtering never loses a selection.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Creates in-memory UI objects only.')]
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows, [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][string[]]$Columns, [string[]]$CheckedId = @())
+    $ui = @{ Rows = @($Rows); Columns = $Columns; Checked = [System.Collections.Generic.HashSet[string]]::new([string[]]@($CheckedId)); Syncing = $false }
+    # Cell texts are computed once: filtering thousands of teams per keystroke must not re-read every property.
+    $ui.Cells = @(foreach ($r in $ui.Rows) { , [string[]]@($Columns | ForEach-Object { [string](Get-TarProperty $r $_) }) })
+    $form = [System.Windows.Forms.Form]@{
+        Text = $Title; Width = 760; Height = 520; StartPosition = 'CenterScreen'; TopMost = $true; MinimizeBox = $false
+        AutoScaleMode = 'Dpi'; Font = [System.Drawing.SystemFonts]::MessageBoxFont; Padding = [System.Windows.Forms.Padding]::new(8)
+    }
+    $ui.Form = $form; $form.Tag = $ui
+    $top = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Top'; AutoSize = $true; WrapContents = $false }
+    $top.Controls.Add([System.Windows.Forms.Label]@{ Text = 'Filter'; AutoSize = $true; Margin = [System.Windows.Forms.Padding]::new(3, 7, 6, 3) })
+    $ui.Filter = [System.Windows.Forms.TextBox]@{ Width = 300 }
+    $ui.All = [System.Windows.Forms.Button]@{ Text = 'Select all'; AutoSize = $true }
+    $ui.None = [System.Windows.Forms.Button]@{ Text = 'Clear'; AutoSize = $true }
+    $top.Controls.AddRange(@($ui.Filter, $ui.All, $ui.None))
+    $ui.List = [System.Windows.Forms.ListView]@{ Dock = 'Fill'; View = 'Details'; CheckBoxes = $true; FullRowSelect = $true; GridLines = $true; MultiSelect = $false; HideSelection = $false }
+    foreach ($c in $Columns) { $null = $ui.List.Columns.Add($c) }
+    $bottom = [System.Windows.Forms.TableLayoutPanel]@{ Dock = 'Bottom'; AutoSize = $true; ColumnCount = 2 }
+    $null = $bottom.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $null = $bottom.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $ui.Count = [System.Windows.Forms.Label]@{ AutoSize = $true; Anchor = 'Left' }
+    $buttons = [System.Windows.Forms.FlowLayoutPanel]@{ AutoSize = $true; WrapContents = $false; Anchor = 'Right' }
+    $ui.Ok = [System.Windows.Forms.Button]@{ Text = 'OK'; AutoSize = $true; DialogResult = 'OK' }
+    $ui.Cancel = [System.Windows.Forms.Button]@{ Text = 'Cancel'; AutoSize = $true; DialogResult = 'Cancel' }
+    $buttons.Controls.AddRange(@($ui.Ok, $ui.Cancel))
+    $bottom.Controls.Add($ui.Count, 0, 0); $bottom.Controls.Add($buttons, 1, 0)
+    # Fill first, then the docked edges (WinForms docks in reverse z-order).
+    $form.Controls.AddRange(@($ui.List, $top, $bottom))
+    $form.AcceptButton = $ui.Ok; $form.CancelButton = $ui.Cancel
+
+    $ui.Filter.Add_TextChanged({ Update-TarCheckListView -Ui (Get-TarFormUi $this) })
+    $ui.All.Add_Click({ $u = Get-TarFormUi $this; Set-TarCheckListAll -Ui $u -Checked $true })
+    $ui.None.Add_Click({ $u = Get-TarFormUi $this; Set-TarCheckListAll -Ui $u -Checked $false })
+    $ui.List.Add_ItemChecked({
+            $u = Get-TarFormUi $this
+            if ($u.Syncing) { return }
+            $id = [string]$_.Item.Tag
+            if ($_.Item.Checked) { $null = $u.Checked.Add($id) } else { $null = $u.Checked.Remove($id) }
+            Update-TarCheckListCount -Ui $u
+        })
+    # A click anywhere on the row toggles it (not only on the small box).
+    $ui.List.Add_MouseClick({
+            $hit = $this.HitTest($_.Location)
+            if ($hit.Item -and $hit.Location -ne [System.Windows.Forms.ListViewHitTestLocations]::StateImage) { $hit.Item.Checked = -not $hit.Item.Checked }
+        })
+    Update-TarCheckListView -Ui $ui
+    $ui
+}
+
+function Update-TarCheckListView {
+    # Shows rows whose visible columns contain the filter text (case-insensitive); keeps check state.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Sets in-memory UI state only.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Ui)
+    $needle = $Ui.Filter.Text.Trim()
+    $Ui.Syncing = $true
+    $Ui.List.BeginUpdate()
+    try {
+        $Ui.List.Items.Clear()
+        $items = [System.Collections.Generic.List[System.Windows.Forms.ListViewItem]]::new()
+        for ($i = 0; $i -lt $Ui.Rows.Count; $i++) {
+            $r = $Ui.Rows[$i]; $values = $Ui.Cells[$i]
+            if ($needle -and -not @($values | Where-Object { $_.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count) { continue }
+            $item = [System.Windows.Forms.ListViewItem]::new($values)
+            $item.Tag = [string]$r.Id
+            $item.Checked = $Ui.Checked.Contains([string]$r.Id)
+            $items.Add($item)
+        }
+        $Ui.List.Items.AddRange($items.ToArray())
+        $Ui.List.AutoResizeColumns([System.Windows.Forms.ColumnHeaderAutoResizeStyle]::HeaderSize)
+    } finally { $Ui.List.EndUpdate(); $Ui.Syncing = $false }
+    Update-TarCheckListCount -Ui $Ui
+}
+
+function Set-TarCheckListAll {
+    # Select all / Clear act on the visible (filtered) rows only.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Sets in-memory UI state only.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Ui, [Parameter(Mandatory)][bool]$Checked)
+    foreach ($item in $Ui.List.Items) {
+        if ($Checked) { $null = $Ui.Checked.Add([string]$item.Tag) } else { $null = $Ui.Checked.Remove([string]$item.Tag) }
+    }
+    Update-TarCheckListView -Ui $Ui
+}
+
+function Update-TarCheckListCount {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Sets in-memory UI state only.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Ui)
+    $hidden = $Ui.Rows.Count - $Ui.List.Items.Count
+    $Ui.Count.Text = "$($Ui.Checked.Count) of $($Ui.Rows.Count) selected" + $(if ($hidden) { " ($hidden hidden by filter)" } else { '' })
+    $Ui.Ok.Enabled = $Ui.Checked.Count -gt 0
+}
+
+function Show-TarCheckList {
+    # Emits the checked rows (in their original order), nothing when cancelled.
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows, [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][string[]]$Columns, [string[]]$CheckedId = @())
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    $ui = New-TarCheckListForm -Rows $Rows -Title $Title -Columns $Columns -CheckedId $CheckedId
+    try {
+        if ($ui.Form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        $Rows | Where-Object { $ui.Checked.Contains([string]$_.Id) }
     } finally { $ui.Form.Dispose() }
 }
