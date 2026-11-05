@@ -1,5 +1,5 @@
-﻿# Strukturerad loggning: JSON Lines till fil + ström-baserad konsolutskrift.
-# Ingen Write-Host: INFO -> Information-strömmen, WARN/ERROR -> Warning, DEBUG -> Verbose.
+﻿# Structured logging: JSON Lines to file + stream-based console output.
+# No Write-Host: INFO -> Information stream, WARN/ERROR -> Warning, DEBUG -> Verbose.
 
 $script:TarLogPath = $null
 

@@ -1,8 +1,8 @@
 ﻿#Requires -Version 7.2
 <#
 .SYNOPSIS
-    Bakåtkompatibel ingång. All logik finns i modulen ./TeamsAccessReport (Invoke-TeamsAccessReport).
-    Argument vidarebefordras oförändrade (@args bevarar parameternamn och switchar).
+    Backward-compatible entry point. All logic lives in the ./TeamsAccessReport module (Invoke-TeamsAccessReport).
+    Arguments are forwarded unchanged (@args preserves parameter names and switches).
 .EXAMPLE
     ./Get-TeamsAccessReport.ps1 -AllTeams -Force
 #>

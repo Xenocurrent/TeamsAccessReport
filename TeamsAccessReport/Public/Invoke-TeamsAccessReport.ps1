@@ -1,24 +1,57 @@
 ﻿function Invoke-TeamsAccessReport {
     <#
     .SYNOPSIS
-        Fullständig åtkomstrapport för Microsoft Teams och tillhörande SharePoint-webbplatser.
+        Complete access report for Microsoft Teams and the associated SharePoint sites.
     .DESCRIPTION
-        Fas 1  Teams via Graph (team, kanaler, direkt/indirekt medlemskap, kanalsajter)     – checkpoint per team
-        Fas 2  SharePoint via PnP i separat process (admins, grupper, unika behörigheter)    – checkpoint per webbplats
-        Fas 3  Upplösning av SharePoint-claims till Entra-användare
-        Fas 4  Avvikelser Teams <-> SharePoint, externa kopplingar, sammanfattning
-        Returnerar sammanfattningsobjektet; alla detaljer skrivs som CSV/JSON i -OutputPath.
+        Phase 1  Teams via Graph (teams, channels, direct/indirect membership, channel sites)  - checkpoint per team
+        Phase 2  SharePoint via PnP in a separate process (admins, groups, unique permissions) - checkpoint per site
+        Phase 3  Resolution of SharePoint claims to Entra users
+        Phase 4  Drift between Teams and SharePoint, external associations, summary
+        Returns the summary object; all details are written as CSV/JSON to -OutputPath.
     .PARAMETER TenantId
-        Valfritt delegerat (identifieras vid inloggning). Krävs app-only.
+        Optional for delegated sign-in (resolved at sign-in). Required for app-only.
+    .PARAMETER ClientId
+        App registration (client) ID for app-only authentication.
+    .PARAMETER CertificateThumbprint
+        Thumbprint of the certificate used for app-only authentication (CurrentUser or LocalMachine store).
+    .PARAMETER TeamId
+        Limit the report to these team (group) IDs. Skips interactive team selection.
+    .PARAMETER ChannelId
+        Limit the report to these channel IDs. Requires -TeamId.
+    .PARAMETER AllTeams
+        Include every team in the tenant without interactive selection.
     .PARAMETER Resume
-        Återupptar en avbruten körning i -OutputPath. Ofullständiga team och misslyckade webbplatser körs om.
+        Resume an interrupted run in -OutputPath. Incomplete teams and failed sites are re-run.
+    .PARAMETER SelectChannels
+        Prompt for channel selection per team.
+    .PARAMETER SelectionMode
+        Auto (default), Gui (Out-GridView), ConsoleGrid (Out-ConsoleGridView) or Menu (numbered console menu).
+    .PARAMETER Force
+        Skip confirmation prompts (tenant confirmation and channel-selection question).
+    .PARAMETER OutputPath
+        Report directory. Defaults to ./TeamsAccess_<timestamp>.
+    .PARAMETER IncludeSharePoint
+        Run phases 2-4: SharePoint permissions, claim resolution and drift analysis.
+    .PARAMETER PnPClientId
+        Entra app ID used by PnP.PowerShell. Defaults to -ClientId in app-only mode.
+    .PARAMETER MaxItemsPerList
+        Maximum number of list items to scan per list (0 = unlimited).
+    .PARAMETER MaxSubwebDepth
+        Maximum subweb recursion depth.
+    .PARAMETER IncludeUserAssociations
+        Find internal users' memberships in shared channels hosted by other tenants (app-only only).
+    .PARAMETER MaxRetries
+        Maximum retries in the Graph SDK retry handler and the SharePoint retry loop.
+    .PARAMETER BaseDelaySeconds
+        Base delay for exponential backoff.
     .EXAMPLE
         Invoke-TeamsAccessReport
-        Interaktivt: logga in, bekräfta tenant, välj team och kanaler.
+        Interactive: sign in, confirm the tenant, select teams and channels.
     .EXAMPLE
         Invoke-TeamsAccessReport -TenantId '<TENANT_ID>' -ClientId '<APP_ID>' -CertificateThumbprint '<THUMBPRINT>' -AllTeams -Force -IncludeSharePoint -IncludeUserAssociations
+        Unattended full report.
     .OUTPUTS
-        PSCustomObject (sammanfattning, samma innehåll som Summary.json)
+        PSCustomObject (summary, same content as Summary.json)
     #>
     [CmdletBinding(DefaultParameterSetName = 'Delegated', SupportsShouldProcess)]
     [OutputType([pscustomobject])]
@@ -51,41 +84,41 @@
     if (-not $PSBoundParameters.ContainsKey('InformationAction')) { $InformationPreference = 'Continue' }
     $appOnly = $PSCmdlet.ParameterSetName -eq 'AppOnly'
 
-    # --- Validering av kombinationer som parameter sets inte kan uttrycka ---
-    if ($ChannelId -and -not $TeamId) { throw '-ChannelId kräver -TeamId.' }
-    if ($TeamId -and $AllTeams) { throw 'Ange antingen -TeamId eller -AllTeams, inte båda.' }
-    if ($Resume -and ($TeamId -or $AllTeams -or $ChannelId)) { throw '-Resume läser urvalet från Selection.json; kombinera inte med -TeamId/-AllTeams/-ChannelId.' }
+    # --- Validate combinations that parameter sets cannot express ---
+    if ($ChannelId -and -not $TeamId) { throw '-ChannelId requires -TeamId.' }
+    if ($TeamId -and $AllTeams) { throw 'Specify either -TeamId or -AllTeams, not both.' }
+    if ($Resume -and ($TeamId -or $AllTeams -or $ChannelId)) { throw '-Resume reads the selection from Selection.json; do not combine it with -TeamId/-AllTeams/-ChannelId.' }
     $spClientId = if ($PnPClientId) { $PnPClientId } elseif ($appOnly) { $ClientId } else { $null }
     if ($IncludeSharePoint -and -not $spClientId) {
-        throw "-IncludeSharePoint kräver en egen Entra-app för PnP (-PnPClientId). Skapa: Register-PnPEntraIDAppForInteractiveLogin -ApplicationName 'PnP-TeamsAccess' -Tenant <tenant>.onmicrosoft.com -SharePointDelegatePermissions AllSites.FullControl"
+        throw "-IncludeSharePoint requires a dedicated Entra app for PnP (-PnPClientId). Create one: Register-PnPEntraIDAppForInteractiveLogin -ApplicationName 'PnP-TeamsAccess' -Tenant <tenant>.onmicrosoft.com -SharePointDelegatePermissions AllSites.FullControl"
     }
-    if ($IncludeUserAssociations -and -not $appOnly) { Write-Warning '-IncludeUserAssociations kräver app-only (delegerat stöder endast "me"). Steget hoppas över.' }
+    if ($IncludeUserAssociations -and -not $appOnly) { Write-Warning '-IncludeUserAssociations requires app-only (delegated only supports "me"). The step is skipped.' }
     $interactive = -not $Resume -and -not $TeamId -and -not $AllTeams
-    if ($interactive -and ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive)) { throw 'Ingen interaktiv konsol. Använd -TeamId, -AllTeams eller -Resume.' }
-    if (Get-Module -Name PnP.PowerShell) { throw 'PnP.PowerShell är laddad i sessionen – starta en ny pwsh (assemblykonflikt med Graph SDK).' }
+    if ($interactive -and ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive)) { throw 'No interactive console. Use -TeamId, -AllTeams or -Resume.' }
+    if (Get-Module -Name PnP.PowerShell) { throw 'PnP.PowerShell is loaded in this session - start a new pwsh (assembly conflict with the Graph SDK).' }
     if (-not (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue)) {
-        if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) { throw 'Microsoft.Graph.Authentication saknas: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser' }
+        if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) { throw 'Microsoft.Graph.Authentication is missing: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser' }
         Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
     }
 
-    # --- Kontext, lager, loggning ---
+    # --- Context, store, logging ---
     $ctx = New-TarContext -OutputPath $OutputPath -MaxRetries $MaxRetries -BaseDelaySeconds $BaseDelaySeconds -MaxItemsPerList $MaxItemsPerList -MaxSubwebDepth $MaxSubwebDepth
     $ctx.AppOnly = $appOnly
     if ($appOnly) { $ctx.ClientId = $ClientId; $ctx.CertificateThumbprint = $CertificateThumbprint }
-    if (-not $PSCmdlet.ShouldProcess($ctx.OutputPath, 'Skapa åtkomstrapport')) { return }
+    if (-not $PSCmdlet.ShouldProcess($ctx.OutputPath, 'Create access report')) { return }
     Initialize-TarStore -Context $ctx -Resume:$Resume
     Initialize-TarLog -Path (Get-TarStorePath $ctx $script:TarFile.Log)
 
     try {
         Connect-TarGraph -Context $ctx -TenantId $TenantId
-        if ($interactive -and -not $Force -and -not (Read-TarYesNo "Fortsätt mot tenant '$($ctx.TenantName ?? $ctx.TenantId)' ($($ctx.TenantDomain ?? $ctx.TenantId))?")) {
-            Write-TarLog 'Avbrutet vid tenantbekräftelse.' -Level WARN
+        if ($interactive -and -not $Force -and -not (Read-TarYesNo "Continue with tenant '$($ctx.TenantName ?? $ctx.TenantId)' ($($ctx.TenantDomain ?? $ctx.TenantId))?")) {
+            Write-TarLog 'Cancelled at tenant confirmation.' -Level WARN
             return
         }
 
         if ($Resume) {
             $selection = Import-TarSelection -Context $ctx
-            Write-TarLog "Återupptar: $($selection.Teams.Count) team från Selection.json"
+            Write-TarLog "Resuming: $($selection.Teams.Count) teams from Selection.json"
             Reset-TarIncompleteWork -Context $ctx
         } else {
             $selection = Get-TarTeamSelection -Context $ctx -TeamId $TeamId -ChannelId $ChannelId -AllTeams:$AllTeams -Interactive:$interactive `
@@ -93,7 +126,7 @@
             if (-not $selection) { return }
             Save-TarSelection -Context $ctx -Selection $selection
         }
-        Write-TarLog "Antal team att behandla: $($selection.Teams.Count)"
+        Write-TarLog "Teams to process: $($selection.Teams.Count)"
 
         Invoke-TarTeamInventory -Context $ctx -Teams $selection.Teams -ChannelFilter $selection.ChannelFilter
         if ($IncludeSharePoint) {
@@ -104,8 +137,8 @@
         if ($IncludeUserAssociations -and $appOnly) { Invoke-TarExternalAssociationScan -Context $ctx }
 
         $summary = Export-TarSummary -Context $ctx -SharePointIncluded:$IncludeSharePoint
-        Write-TarLog ("Klart: Status={0} Team={1} Rader={2} Avvikelser={3} (High={4}) Fel={5} -> {6}" -f $summary.ResultStatus, $summary.Teams, $summary.AccessRows, $summary.DriftFindings, $summary.DriftHigh, $summary.Errors, $ctx.OutputPath)
-        if ($summary.Errors) { Write-TarLog "Se Errors.csv – $($summary.Errors) steg misslyckades (403 = saknad behörighet/consent)." -Level WARN }
+        Write-TarLog ("Done: Status={0} Teams={1} Rows={2} Drift={3} (High={4}) Errors={5} -> {6}" -f $summary.ResultStatus, $summary.Teams, $summary.AccessRows, $summary.DriftFindings, $summary.DriftHigh, $summary.Errors, $ctx.OutputPath)
+        if ($summary.Errors) { Write-TarLog "See Errors.csv - $($summary.Errors) steps failed (403 = missing permission/consent)." -Level WARN }
         $summary
     } finally {
         Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null

@@ -1,6 +1,6 @@
-﻿# Fas 2 – SharePoint-skanning via PnP. Körs i separat pwsh-process (Worker/Invoke-SharePointScan.ps1)
-# eftersom PnP.PowerShell och Microsoft.Graph-SDK laddar inkompatibla assemblies i samma session.
-# Invoke-TarSpRaw är den ENDA punkten som rör Invoke-PnPSPRestMethod (testsöm).
+﻿# Phase 2 - SharePoint scan via PnP. Runs in a separate pwsh process (Worker/Invoke-SharePointScan.ps1)
+# because PnP.PowerShell and the Microsoft Graph SDK load incompatible assemblies in the same session.
+# Invoke-TarSpRaw is the ONLY place that touches Invoke-PnPSPRestMethod (test seam).
 
 $script:TarSpRoleExpand = 'roleassignments?$expand=Member,RoleDefinitionBindings&$select=Member/Title,Member/LoginName,Member/Email,Member/PrincipalType,RoleDefinitionBindings/Name'
 
@@ -21,14 +21,14 @@ function Invoke-TarSpRequest {
             $status = Get-TarHttpStatusFromError $_
             if ($status -notin $script:TarRetryableStatus -or $attempt -eq $Context.MaxRetries) { throw }
             $wait = Get-TarBackoffDelay -Attempt $attempt -BaseDelaySeconds $Context.BaseDelaySeconds
-            Write-TarLog "SP HTTP $status ($attempt/$($Context.MaxRetries)); väntar $wait ms" -Level WARN -Data @{ url = $Url }
+            Write-TarLog "SP HTTP $status ($attempt/$($Context.MaxRetries)); waiting $wait ms" -Level WARN -Data @{ url = $Url }
             Start-Sleep -Milliseconds $wait
         }
     }
 }
 
 function Get-TarSpCollection {
-    # Följer odata.nextLink (nometadata) och d.__next (verbose). Skickar element i pipeline.
+    # Follows odata.nextLink (nometadata) and d.__next (verbose). Emits elements to the pipeline.
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Connection, [int]$Max = 0)
     $next = $Url; $count = 0
@@ -40,7 +40,7 @@ function Get-TarSpCollection {
         foreach ($v in @($values)) {
             if ($null -eq $v) { continue }
             $v; $count++
-            if ($Max -gt 0 -and $count -ge $Max) { Write-TarLog "Max $Max objekt nått för $Url (se -MaxItemsPerList)." -Level WARN; return }
+            if ($Max -gt 0 -and $count -ge $Max) { Write-TarLog "Max $Max items reached for $Url (see -MaxItemsPerList)." -Level WARN; return }
         }
         $next = Get-TarProperty $r 'odata.nextLink'
         if (-not $next -and $d) { $next = Get-TarProperty $d '__next' }
@@ -71,7 +71,7 @@ function Get-TarSpRoleAssignment {
 }
 
 function Invoke-TarSpWebScan {
-    # Webb -> listor -> objekt (5000/sida) -> underwebbar (rekursivt). Skickar tilldelningsposter i pipeline.
+    # Web -> lists -> items (5000/page) -> subwebs (recursive). Emits assignment records to the pipeline.
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)][string]$WebUrl,
         [Parameter(Mandatory)]$Connection, [int]$Depth = 0)
@@ -95,21 +95,21 @@ function Invoke-TarSpWebScan {
             $items = @(Get-TarSpCollection -Context $Context -Connection $Connection -Max $Context.MaxItemsPerList `
                     -Url "$listUrl/items?`$select=Id,FileRef,HasUniqueRoleAssignments&`$top=5000")
             $unique = @($items | Where-Object { Get-TarProperty $_ 'HasUniqueRoleAssignments' })
-            Write-TarLog "    Lista '$title': $($items.Count) objekt, $($unique.Count) med unik behörighet"
+            Write-TarLog "    List '$title': $($items.Count) items, $($unique.Count) with unique permissions"
             foreach ($it in $unique) {
                 $itemId = [string](Get-TarProperty $it 'Id')
                 Get-TarSpRoleAssignment -Context $Context -SecurableUrl "$listUrl/items($itemId)" -Connection $Connection |
                     ConvertTo-TarSpAssignmentRecord -SiteUrl $SiteUrl -WebUrl $WebUrl -Scope 'Item' -ObjectPath (Get-TarProperty $it 'FileRef') -ListTitle $title -ItemId $itemId
             }
         } catch {
-            Write-TarLog "    Lista '$title' misslyckades: $($_.Exception.Message)" -Level ERROR
+            Write-TarLog "    List '$title' failed: $($_.Exception.Message)" -Level ERROR
             Add-TarErrorRecord -Context $Context -Stage 'SPList' -Target "$WebUrl :: $title" -Message $_.Exception.Message
         }
     }
-    if ($Depth -ge $Context.MaxSubwebDepth) { Write-TarLog "    Maxdjup $($Context.MaxSubwebDepth) nått på $WebUrl" -Level WARN; return }
+    if ($Depth -ge $Context.MaxSubwebDepth) { Write-TarLog "    Max depth $($Context.MaxSubwebDepth) reached at $WebUrl" -Level WARN; return }
     foreach ($s in @(Get-TarSpCollection -Context $Context -Url "$WebUrl/_api/web/webs?`$select=Url" -Connection $Connection)) {
         $sub = Get-TarProperty $s 'Url'
-        Write-TarLog "    Underwebb (djup $($Depth + 1)): $sub"
+        Write-TarLog "    Subweb (depth $($Depth + 1)): $sub"
         Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $sub -Connection $Connection -Depth ($Depth + 1)
     }
 }
@@ -139,17 +139,17 @@ function Invoke-TarSpSiteScan {
 }
 
 function Invoke-TarSharePointScan {
-    # Worker-ingång. Förutsätter att PnP.PowerShell är laddat (eller stubbat i tester).
+    # Worker entry point. Assumes PnP.PowerShell is loaded (or stubbed in tests).
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string[]]$Sites, [Parameter(Mandatory)][string]$ClientId,
         [string]$Thumbprint, [string]$Tenant)
     $done = Get-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.SharePoint
-    Write-TarLog "SharePoint-skanning: $($Sites.Count) webbplatser, redan klara: $($done.Count)"
+    Write-TarLog "SharePoint scan: $($Sites.Count) sites, already done: $($done.Count)"
     $n = 0
     foreach ($site in $Sites) {
         $n++
-        if ($done.Contains($site)) { Write-TarLog "[$n] Hoppar över (klar): $site"; continue }
-        Write-TarLog "[$n/$($Sites.Count)] Webbplats $site"
+        if ($done.Contains($site)) { Write-TarLog "[$n] Skipping (done): $site"; continue }
+        Write-TarLog "[$n/$($Sites.Count)] Site $site"
         try {
             $connArgs = @{ Url = $site; ClientId = $ClientId; ReturnConnection = $true; ErrorAction = 'Stop' }
             if ($Thumbprint) { $connArgs.Thumbprint = $Thumbprint; $connArgs.Tenant = $Tenant }
@@ -158,21 +158,21 @@ function Invoke-TarSharePointScan {
             Write-TarRecord -Context $Context -Name $script:TarFile.SpAssignments -InputObject $result.Assignments
             Write-TarRecord -Context $Context -Name $script:TarFile.SpGroupMembers -InputObject $result.GroupMembers
             Add-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.SharePoint -Key $site
-            Write-TarLog "    Klar: $($result.Assignments.Count) rollkopplingar, $($result.GroupCount) grupper, $($result.GroupMembers.Count) gruppmedlemskap"
+            Write-TarLog "    Done: $($result.Assignments.Count) role assignments, $($result.GroupCount) groups, $($result.GroupMembers.Count) group memberships"
         } catch {
-            Write-TarLog "    Webbplats misslyckades: $($_.Exception.Message)" -Level ERROR
+            Write-TarLog "    Site failed: $($_.Exception.Message)" -Level ERROR
             Add-TarErrorRecord -Context $Context -Stage 'SPSite' -Target $site -Message $_.Exception.Message
         }
     }
 }
 
 function Start-TarSharePointScan {
-    # Startar fas 2 i separat process (produktion) eller i samma process (tester).
+    # Starts phase 2 in a separate process (production) or in the same process (tests).
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$ClientId)
     $sites = [string[]]@(Read-TarRecord -Context $Context -Name $script:TarFile.Channels | Where-Object { $_.SiteUrl } | ForEach-Object { $_.SiteUrl.TrimEnd('/') } | Sort-Object -Unique)
-    Write-TarLog "Fas 2: $($sites.Count) unika SharePoint-webbplatser"
-    if ($sites.Count -eq 0 -or -not $PSCmdlet.ShouldProcess("$($sites.Count) webbplatser", 'SharePoint-skanning')) { return }
+    Write-TarLog "Phase 2: $($sites.Count) unique SharePoint sites"
+    if ($sites.Count -eq 0 -or -not $PSCmdlet.ShouldProcess("$($sites.Count) sites", 'SharePoint scan')) { return }
     $tenant = if ($Context.InitialDomain) { $Context.InitialDomain } else { $Context.TenantId }
     $thumb = if ($Context.AppOnly) { $Context.CertificateThumbprint } else { $null }
 
@@ -185,11 +185,11 @@ function Start-TarSharePointScan {
         ConvertTo-Json -Depth 5 | Set-Content $cfgPath -Encoding utf8
     $pwsh = (Get-Process -Id $PID).Path
     $worker = Join-Path $PSScriptRoot '..' 'Worker' 'Invoke-SharePointScan.ps1'
-    Write-TarLog "Startar SharePoint-worker i separat process: $pwsh"
-    # Barnprocessens stdout/stderr får ALDRIG hamna i returströmmen (skulle förorena funktionens output).
+    Write-TarLog "Starting SharePoint worker in a separate process: $pwsh"
+    # The child process stdout/stderr must NEVER reach the output stream (it would pollute the function's return value).
     & $pwsh -NoProfile -File $worker -ConfigPath $cfgPath 2>&1 | ForEach-Object { Write-Information "[worker] $_" }
     if ($LASTEXITCODE -ne 0) {
-        Write-TarLog "SharePoint-worker avslutades med kod $LASTEXITCODE – se run.jsonl. Kör om med -Resume." -Level ERROR
+        Write-TarLog "SharePoint worker exited with code $LASTEXITCODE - see run.jsonl. Re-run with -Resume." -Level ERROR
         Add-TarErrorRecord -Context $Context -Stage 'SPWorker' -Message "Exit code $LASTEXITCODE"
     }
 }

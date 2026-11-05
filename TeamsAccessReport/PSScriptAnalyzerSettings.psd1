@@ -1,7 +1,7 @@
 ﻿@{
     Severity     = @('Error', 'Warning', 'Information')
     ExcludeRules = @(
-        # Positionella parametrar tillåts för interna enradiga hjälpanrop (Get-TarProperty $x 'Name').
+        # Positional parameters are allowed for internal one-line helper calls (Get-TarProperty $x 'Name').
         'PSAvoidUsingPositionalParameters'
     )
     Rules        = @{

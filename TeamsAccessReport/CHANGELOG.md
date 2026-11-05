@@ -1,23 +1,34 @@
 # Changelog
 
+## 2.0.1 – 2026-11-05
+### Changed
+- All code comments, log messages, error messages, prompts, tests and documentation are now in English.
+- Interactive yes/no prompts accept `y`/`yes`/`n`/`no` (previously Swedish `j`/`ja`/`nej` as well).
+- Interactive selection columns renamed: `Name`, `Visibility`, `Description`, `Channel`, `Type`.
+- Full comment-based help for every parameter of `Invoke-TeamsAccessReport`.
+
+### Not changed
+- The SharePoint role name `Begränsad åtkomst` remains in `$script:TarLimitedAccessRoles`. It is a data value
+  (the Swedish localization of "Limited Access" returned by SharePoint), not UI text.
+
 ## 2.0.0 – 2026-11-05
-Omstrukturering från monolitiskt skript (930 rader, 26 funktioner, ~450 rader logik i skriptkroppen) till modul.
+Restructured from a monolithic script (930 lines, 26 functions, ~450 lines of logic in the script body) into a module.
 
-### Ändrat
-- Modul `TeamsAccessReport` med en publik funktion `Invoke-TeamsAccessReport`; `Get-TeamsAccessReport.ps1` finns kvar som tunn wrapper (`@args`).
-- Explicit `$Context`-objekt ersätter implicita script-globala variabler (PSSA flaggade tidigare `-SelectionMode` som oanvänd p.g.a. detta).
-- Parameter sets `Delegated` / `AppOnly` i stället för manuell validering av ClientId/Thumbprint/TenantId.
-- Graph-statuskod läses deterministiskt via `-SkipHttpErrorCheck -StatusCodeVariable` (tidigare: tolkning av felmeddelanden).
-- Fas 2-workern är en egen fil (`Worker/Invoke-SharePointScan.ps1`) i stället för ett dolt parameter-läge i huvudskriptet.
-- Strukturerad logg `run.jsonl` (JSON Lines). Inga `Write-Host` utanför interaktiv meny.
-- `-WhatIf`/`-Confirm` stöds (`SupportsShouldProcess`).
-- Funktionen returnerar sammanfattningsobjektet (pipeline-vänligt) utöver filerna.
+### Changed
+- Module `TeamsAccessReport` with a single public function `Invoke-TeamsAccessReport`; `Get-TeamsAccessReport.ps1` remains as a thin wrapper (`@args`).
+- An explicit `$Context` object replaces implicit script-scope variables (PSScriptAnalyzer previously flagged `-SelectionMode` as unused because of this).
+- Parameter sets `Delegated` / `AppOnly` instead of manual validation of ClientId/Thumbprint/TenantId.
+- Graph status codes are read deterministically via `-SkipHttpErrorCheck -StatusCodeVariable` (previously: parsing error messages).
+- The phase 2 worker is its own file (`Worker/Invoke-SharePointScan.ps1`) instead of a hidden parameter mode in the main script.
+- Structured log `run.jsonl` (JSON Lines). No `Write-Host` outside the interactive menu.
+- `-WhatIf`/`-Confirm` supported (`SupportsShouldProcess`).
+- The function returns the summary object (pipeline friendly) in addition to the files.
 
-### Rättat (hittat under granskning)
-- Worker-processens stdout läckte in i returströmmen (9 skräpobjekt före sammanfattningen).
-- `$x = if (...) { @() }` gav `$null` → avvikelseanalysen kraschade för webbplatser utan matchande Teams-användare.
-- Tomma strängar vs `$null` skrevs olika i CSV → återupptagen körning var inte byte-identisk.
-- Testjämförelser av saknade filer gav falskt grönt (två tomma strängar).
+### Fixed (found during review)
+- Worker process stdout leaked into the output stream (9 junk objects before the summary).
+- `$x = if (...) { @() }` produced `$null` → drift analysis crashed for sites without matching Teams users.
+- Empty strings vs `$null` were written differently in CSV → a resumed run was not byte-identical.
+- Test comparisons of missing files produced a false green (two empty strings).
 
-### Kvalitetsgrind
-- `build.ps1`: PSScriptAnalyzer (0 anmärkningar krävs) + Pester (68 tester) + kodtäckning ≥ 80 %.
+### Quality gate
+- `build.ps1`: PSScriptAnalyzer (0 findings required) + Pester (68 tests) + code coverage ≥ 80 %.

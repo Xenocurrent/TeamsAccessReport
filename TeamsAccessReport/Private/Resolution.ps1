@@ -1,7 +1,7 @@
-﻿# Fas 3 – löser SharePoint-principaler (claims) till Entra-användare. Cache per körning.
+﻿# Phase 3 - resolves SharePoint principals (claims) to Entra users. Cache per run.
 
 function New-TarResolverCache {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Ren konstruktor i minnet; ändrar inget systemtillstånd.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure in-memory constructor; does not change system state.')]
     [CmdletBinding()]
     [OutputType([hashtable])]
     param()
@@ -39,7 +39,7 @@ function Get-TarGroupUser {
 }
 
 function New-TarPrincipal {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Ren konstruktor i minnet; ändrar inget systemtillstånd.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure in-memory constructor; does not change system state.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string]$Kind, $UserId, $Upn, $DisplayName, $UserType, [string]$Path)
@@ -47,8 +47,8 @@ function New-TarPrincipal {
 }
 
 function Resolve-TarSpPrincipal {
-    # Claim-format: https://learn.microsoft.com/sharepoint/ (i:0#.f = användare, c:0o.c = M365-grupp, c:0t.c = säkerhetsgrupp).
-    # Skickar en eller flera principal-poster i pipeline.
+    # Claim formats: i:0#.f = user, c:0o.c = Microsoft 365 group (_o suffix = owners), c:0t.c = security group.
+    # Emits one or more principal records to the pipeline.
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][hashtable]$Cache,
         [AllowEmptyString()][string]$Login, [string]$Title, [string]$Email, [string]$PathPrefix = 'Direct')
@@ -86,7 +86,7 @@ function Invoke-TarPrincipalResolution {
     param([Parameter(Mandatory)]$Context)
     $assignments = @(Read-TarRecord -Context $Context -Name $script:TarFile.SpAssignments)
     if ($assignments.Count -eq 0) { return }
-    Write-TarLog "Fas 3: löser upp $($assignments.Count) SharePoint-rollkopplingar"
+    Write-TarLog "Phase 3: resolving $($assignments.Count) SharePoint role assignments"
     $cache = New-TarResolverCache
     $groupIndex = @{}
     foreach ($gm in @(Read-TarRecord -Context $Context -Name $script:TarFile.SpGroupMembers)) {
@@ -98,7 +98,7 @@ function Invoke-TarPrincipalResolution {
     $n = 0
     foreach ($a in $assignments) {
         $n++
-        if ($n % 500 -eq 0) { Write-TarLog "    $n/$($assignments.Count) upplösta" }
+        if ($n % 500 -eq 0) { Write-TarLog "    $n/$($assignments.Count) resolved" }
         $principals = if ([string]$a.PrincipalType -eq '8') {
             $prefix = "SPGroup:$($a.PrincipalTitle)"
             $isLink = $a.PrincipalTitle -match '^SharingLinks\.'
@@ -121,5 +121,5 @@ function Invoke-TarPrincipalResolution {
         }
     }
     Set-TarRecord -Context $Context -Name $script:TarFile.EffectiveSpAccess -InputObject $effective
-    Write-TarLog "    Effektiva SharePoint-rader: $($effective.Count)"
+    Write-TarLog "    Effective SharePoint rows: $($effective.Count)"
 }
