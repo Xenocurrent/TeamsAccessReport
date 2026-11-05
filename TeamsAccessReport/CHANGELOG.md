@@ -1,5 +1,17 @@
 ﻿# Changelog
 
+## 2.0.3 – 2026-11-05
+### Fixed
+- Graph returns HTTP 404 "Folder location for this channel is not ready yet" for channels whose files folder has
+  not been provisioned (found in the first real-tenant run). Standard channels now fall back to the team's document
+  library (`/groups/{id}/drive/root` → `sharepointIds.siteUrl`), because standard channels always live on the team site.
+  Private/shared channels fail with an actionable message (open the Files tab once, then `-Resume`).
+- Graph errors carry `StatusCode` and `GraphMessage` in `Exception.Data` so callers branch without parsing text.
+
+### Changed
+- `Channels.csv` has a new column `SiteSource` (`FilesFolder` | `GroupDriveFallback`). Runs started with 2.0.2 or
+  earlier cannot be resumed with 2.0.3; start a new run.
+
 ## 2.0.2 – 2026-11-05
 ### Fixed
 - `Get-TarProperty` failed on generic `Dictionary<TKey,TValue>` (the type the Graph SDK returns for response

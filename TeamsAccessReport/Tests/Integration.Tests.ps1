@@ -33,6 +33,11 @@ Describe 'Full run (app-only, SharePoint, external associations)' {
     It 'returns exactly one object (no leak into the output stream)' { @($summary).Count | Should -Be 1 }
     It 'returns Complete without errors' { $summary.ResultStatus | Should -Be 'Complete'; $summary.Errors | Should -Be 0 }
     It 'follows pagination (2 teams across 2 pages)' { $summary.Teams | Should -Be 2 }
+    It 'falls back to the team document library when a standard channel folder is not provisioned' {
+        $c4 = Import-Csv (Join-Path $out 'Channels.csv') | Where-Object ChannelId -eq 'C4'
+        $c4.SiteSource | Should -Be 'GroupDriveFallback'
+        $c4.SiteUrl | Should -Be 'https://contoso.sharepoint.com/sites/IT'
+    }
     It 'counts channel types, archived teams, indirect and external rows' {
         $summary.Channels | Should -Be 4; $summary.PrivateChannels | Should -Be 1; $summary.SharedChannels | Should -Be 1
         $summary.ArchivedTeams | Should -Be 1; $summary.IndirectRows | Should -Be 1; $summary.ExternalTenantRows | Should -Be 1

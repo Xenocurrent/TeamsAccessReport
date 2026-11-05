@@ -52,6 +52,38 @@ Describe 'ConvertFrom-TarRetryAfterHeader (adapter contract with the real Graph 
     }
 }
 
+Describe 'Get-TarChannelSite when the files folder is not provisioned' {
+    BeforeAll {
+        Mock -ModuleName TeamsAccessReport Write-TarLog { }
+        Mock -ModuleName TeamsAccessReport Invoke-TarGraphRequest -ParameterFilter { $Uri -like '*/filesFolder' } {
+            $ex = [System.Net.Http.HttpRequestException]::new('Graph HTTP 404 for x :: Folder location for this channel is not ready yet')
+            $ex.Data['StatusCode'] = 404; $ex.Data['GraphMessage'] = 'Folder location for this channel is not ready yet, please try again later.'
+            throw $ex
+        }
+        Mock -ModuleName TeamsAccessReport Invoke-TarGraphRequest -ParameterFilter { $Uri -like '*/drive/root*' } {
+            @{ id = 'root'; webUrl = 'https://t.sharepoint.com/sites/T/Shared Documents'; parentReference = @{ driveId = 'd1' }; sharepointIds = @{ siteUrl = 'https://t.sharepoint.com/sites/T' } }
+        }
+    }
+    It 'standard channel falls back to the group drive' {
+        InModuleScope TeamsAccessReport {
+            $r = Get-TarChannelSite -Context ([pscustomobject]@{ GraphBase = 'g' }) -TeamId 't' -ChannelId 'c' -ChannelName 'General' -MembershipType 'standard'
+            $r.SiteUrl | Should -Be 'https://t.sharepoint.com/sites/T'; $r.SiteSource | Should -Be 'GroupDriveFallback'; $r.DriveId | Should -Be 'd1'
+        }
+    }
+    It '<_> channel fails with an actionable message' -ForEach @('private', 'shared') {
+        InModuleScope TeamsAccessReport -Parameters @{ Type = $_ } {
+            { Get-TarChannelSite -Context ([pscustomobject]@{ GraphBase = 'g' }) -TeamId 't' -ChannelId 'c' -ChannelName 'Payroll' -MembershipType $Type } |
+                Should -Throw -ExpectedMessage "*Open the channel's Files tab*-Resume*"
+        }
+    }
+    It 'other 404 errors are not swallowed' {
+        InModuleScope TeamsAccessReport {
+            Mock Invoke-TarGraphRequest -ParameterFilter { $Uri -like '*/filesFolder' } { $ex = [System.Net.Http.HttpRequestException]::new('Graph HTTP 404 for x :: Not found'); $ex.Data['StatusCode'] = 404; $ex.Data['GraphMessage'] = 'Not found'; throw $ex }
+            { Get-TarChannelSite -Context ([pscustomobject]@{ GraphBase = 'g' }) -TeamId 't' -ChannelId 'c' -ChannelName 'General' -MembershipType 'standard' } | Should -Throw -ExpectedMessage '*Not found*'
+        }
+    }
+}
+
 Describe 'Get-TarHttpStatusFromError' {
     It 'parses <Message> as <Expected>' -ForEach @(
         @{ Message = 'Response status code does not indicate success: 429 (Too Many Requests).'; Expected = 429 }
