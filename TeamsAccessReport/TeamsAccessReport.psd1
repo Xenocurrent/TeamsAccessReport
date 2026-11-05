@@ -1,6 +1,6 @@
 ﻿@{
     RootModule           = 'TeamsAccessReport.psm1'
-    ModuleVersion        = '2.0.1'
+    ModuleVersion        = '2.0.2'
     GUID                 = '6f0c8a51-3d7e-4b9a-9a1e-2c4f7d5b8e10'
     Author               = '<AUTHOR>'
     CompanyName          = '<COMPANY>'
