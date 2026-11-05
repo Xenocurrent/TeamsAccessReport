@@ -1,5 +1,16 @@
 ﻿# Changelog
 
+## 2.3.0 – 2026-11-05
+### Added
+- Windows check-box list for team and channel selection (replaces Out-GridView multi-select): a check box per row,
+  click anywhere on a row to toggle, filter that keeps selections, Select all / Clear on the visible rows,
+  "n of m selected (k hidden by filter)", OK disabled while nothing is selected. Built for large tenants: cell texts
+  are computed once and the list is filled in one batch.
+- The channel list starts with every channel checked (the default is all channels).
+
+### Fixed
+- Certificate text in the start window was cut off: shorter text without `CN=` and a wider drop-down.
+
 ## 2.2.0 – 2026-11-05
 ### Added
 - Windows start window (Windows Forms): connection (saved profile, tenant with live check, sign-in method, app ID,

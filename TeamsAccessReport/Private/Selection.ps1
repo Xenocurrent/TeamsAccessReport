@@ -63,12 +63,14 @@ function Select-TarItem {
     [CmdletBinding()]
     [OutputType([psobject])]
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows, [Parameter(Mandatory)][string]$Title,
-        [Parameter(Mandatory)][string[]]$Columns, [string]$Mode = 'Auto', [switch]$Single)
+        [Parameter(Mandatory)][string[]]$Columns, [string]$Mode = 'Auto', [switch]$Single, [string[]]$CheckedId = @())
     if ($Rows.Count -eq 0) { return }
     $resolved = Resolve-TarSelectionMode -Mode $Mode
     Write-TarLog "Selection '$Title' via $resolved ($($Rows.Count) options)" -Level DEBUG
     $picked = switch ($resolved) {
         'Gui' {
+            # Multi-select: own check-box list (discoverable, filter, select all). Single: Out-GridView.
+            if (-not $Single -and (Test-TarGuiAvailable)) { return (Show-TarCheckList -Rows $Rows -Title $Title -Columns $Columns -CheckedId $CheckedId) }
             $hint = if ($Single) { '' } else { ' (Ctrl/Shift for multi-select)' }
             $Rows | Select-Object -Property (@($Columns) + 'Id') | Out-GridView -Title "$Title$hint" -OutputMode ($Single ? 'Single' : 'Multiple')
         }
@@ -128,7 +130,7 @@ function Get-TarTeamSelection {
             try {
                 $chs = @(Get-TarGraphCollection -Context $Context -Uri "$base/teams/$($t.id)/channels?`$select=id,displayName,membershipType")
                 $rows = @($chs | Sort-Object { $_.membershipType }, { $_.displayName } | ForEach-Object { [pscustomobject]@{ Channel = $_.displayName; Type = $_.membershipType; Id = $_.id } })
-                $ids = [string[]]@(Select-TarItem -Rows $rows -Title "Channels in '$($t.displayName)'" -Columns 'Channel', 'Type' -Mode $SelectionMode | ForEach-Object { $_.Id })
+                $ids = [string[]]@(Select-TarItem -Rows $rows -Title "Channels in '$($t.displayName)'" -Columns 'Channel', 'Type' -Mode $SelectionMode -CheckedId @($rows.Id) | ForEach-Object { $_.Id })
                 $filter[$t.id] = [System.Collections.Generic.HashSet[string]]::new($ids)
                 Write-TarLog "    '$($t.displayName)': $($ids.Count) of $($chs.Count) channels selected"
             } catch { Write-TarLog "Channel selection failed for '$($t.displayName)': $($_.Exception.Message) - all channels are included." -Level WARN }

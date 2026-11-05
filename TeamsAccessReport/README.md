@@ -20,8 +20,9 @@ one window with everything an interactive run needs – no console input:
 | Report | SharePoint (phases 2-4) · users' teams in other tenants · choose channels per team · output folder + **Browse** |
 
 **Start** validates everything at once (tenant lookup, GUID, certificate present with private key, output folder
-unused) and lists all problems in the window instead of failing later. Tenant confirmation, team selection and channel
-selection follow as pop-ups. Report options are remembered per profile; switches on the command line win.
+unused) and lists all problems in the window instead of failing later. Tenant confirmation follows as a pop-up; team
+and channel selection use a check-box list (filter, Select all / Clear on visible rows, "n of m selected"; filtering
+never drops a selection, so large tenants can be narrowed down step by step). Report options are remembered per profile; switches on the command line win.
 `New-TeamsAccessReportProfile` opens the same window without the report section.
 
 Elsewhere (Linux/macOS, or `-SelectionMode Menu`) the same questions are asked in the console. Saved connections,
