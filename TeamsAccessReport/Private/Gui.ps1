@@ -181,7 +181,8 @@ function Set-TarStartFormProfile {
     $Ui.Certificate.SelectedIndex = -1
     $Ui.Certificate.Text = ''
     $thumb = if ($p) { [string]$p.CertificateThumbprint } else { '' }
-    $match = if ($thumb) { @(0..($Ui.CertRows.Count - 1) | Where-Object { $Ui.CertRows.Count -and $Ui.CertRows[$_].Id -eq $thumb }) } else { @() }
+    # @() around the whole if: an if expression unrolls an empty array to $null.
+    $match = @(if ($thumb -and $Ui.CertRows.Count) { 0..($Ui.CertRows.Count - 1) | Where-Object { $Ui.CertRows[$_].Id -eq $thumb } })
     if ($match.Count) { $Ui.Certificate.SelectedIndex = $match[0] }
     elseif ($thumb) { $Ui.Certificate.Text = $thumb }
     elseif (-not $p -and $Ui.CertRows.Count -eq 1) { $Ui.Certificate.SelectedIndex = 0 }
