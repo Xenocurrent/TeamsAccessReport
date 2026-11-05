@@ -23,7 +23,11 @@ function Invoke-TarGraphRequest {
         if ($r.StatusCode -eq 404 -and $AllowNotFound) { return $null }
         $graphError = Get-TarProperty (Get-TarProperty $r.Body 'error') 'message'
         if ($r.StatusCode -notin $script:TarRetryableStatus -or $attempt -eq $outerMax) {
-            throw [System.Net.Http.HttpRequestException]::new("Graph HTTP $($r.StatusCode) for $Uri :: $graphError")
+            $ex = [System.Net.Http.HttpRequestException]::new("Graph HTTP $($r.StatusCode) for $Uri :: $graphError")
+            # Callers branch on these instead of parsing the message.
+            $ex.Data['StatusCode'] = $r.StatusCode
+            $ex.Data['GraphMessage'] = [string]$graphError
+            throw $ex
         }
         $wait = Get-TarBackoffDelay -Attempt ($attempt + 2) -BaseDelaySeconds $Context.BaseDelaySeconds -RetryAfterSeconds $r.RetryAfterSeconds
         Write-TarLog "Graph HTTP $($r.StatusCode) after SDK retry; outer attempt $attempt/$outerMax, waiting $wait ms" -Level WARN -Data @{ uri = $Uri }

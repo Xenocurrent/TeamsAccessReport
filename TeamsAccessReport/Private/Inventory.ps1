@@ -15,12 +15,38 @@ function ConvertTo-TarAccessRecord {
     }
 }
 
+function Test-TarFolderNotProvisioned {
+    # Graph returns 404 "Folder location for this channel is not ready yet" until the channel's files folder
+    # has been provisioned (typically when someone opens the channel's Files tab for the first time).
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+    $data = $ErrorRecord.Exception.Data
+    return ($data -and $data['StatusCode'] -eq 404 -and [string]$data['GraphMessage'] -match 'not ready')
+}
+
 function Get-TarChannelSite {
     # filesFolder -> driveItem -> sharepointIds.siteUrl (works for all channel types and managed paths).
+    # Standard channels fall back to the team's own document library when the folder is not provisioned yet,
+    # because standard channels always live on the team site.
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$TeamId, [Parameter(Mandatory)][string]$ChannelId)
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$TeamId, [Parameter(Mandatory)][string]$ChannelId,
+        [Parameter(Mandatory)][string]$ChannelName, [Parameter(Mandatory)][string]$MembershipType)
     $base = $Context.GraphBase
-    $ff = Invoke-TarGraphRequest -Context $Context -Uri "$base/teams/$TeamId/channels/$ChannelId/filesFolder"
+    try {
+        $ff = Invoke-TarGraphRequest -Context $Context -Uri "$base/teams/$TeamId/channels/$ChannelId/filesFolder"
+    } catch {
+        if (-not (Test-TarFolderNotProvisioned $_)) { throw }
+        if ($MembershipType -ne 'standard') {
+            throw "Files folder for $MembershipType channel '$ChannelName' is not provisioned yet. Open the channel's Files tab in Teams once, then re-run with -Resume."
+        }
+        Write-TarLog "    Files folder for '$ChannelName' not provisioned yet; using the team's document library (standard channel)." -Level WARN
+        $root = Invoke-TarGraphRequest -Context $Context -Uri "$base/groups/$TeamId/drive/root`?`$select=id,webUrl,parentReference,sharepointIds"
+        return [pscustomobject]@{
+            SiteUrl = Get-TarProperty (Get-TarProperty $root 'sharepointIds') 'siteUrl'; FilesFolderUrl = Get-TarProperty $root 'webUrl'
+            DriveId = Get-TarProperty (Get-TarProperty $root 'parentReference') 'driveId'; FolderItemId = Get-TarProperty $root 'id'; SiteSource = 'GroupDriveFallback'
+        }
+    }
     $folderId = Get-TarProperty $ff 'id'
     $driveId = Get-TarProperty (Get-TarProperty $ff 'parentReference') 'driveId'
     $siteUrl = $null
@@ -28,7 +54,7 @@ function Get-TarChannelSite {
         $item = Invoke-TarGraphRequest -Context $Context -Uri "$base/drives/$driveId/items/$folderId`?`$select=id,sharepointIds"
         $siteUrl = Get-TarProperty (Get-TarProperty $item 'sharepointIds') 'siteUrl'
     }
-    [pscustomobject]@{ SiteUrl = $siteUrl; FilesFolderUrl = Get-TarProperty $ff 'webUrl'; DriveId = $driveId; FolderItemId = $folderId }
+    [pscustomobject]@{ SiteUrl = $siteUrl; FilesFolderUrl = Get-TarProperty $ff 'webUrl'; DriveId = $driveId; FolderItemId = $folderId; SiteSource = 'FilesFolder' }
 }
 
 function Invoke-TarTeamInventory {
@@ -78,12 +104,12 @@ function Invoke-TarTeamInventory {
         }
 
         foreach ($ch in $channels) {
-            $site = [pscustomobject]@{ SiteUrl = $null; FilesFolderUrl = $null; DriveId = $null; FolderItemId = $null }
-            try { $site = Get-TarChannelSite -Context $Context -TeamId $team.id -ChannelId $ch.id }
+            $site = [pscustomobject]@{ SiteUrl = $null; FilesFolderUrl = $null; DriveId = $null; FolderItemId = $null; SiteSource = $null }
+            try { $site = Get-TarChannelSite -Context $Context -TeamId $team.id -ChannelId $ch.id -ChannelName $ch.displayName -MembershipType $ch.membershipType }
             catch { & $fail "FilesFolder:$($ch.displayName)" $ch.id $_ }
             $channelRecords.Add([pscustomobject]@{ TeamId = $team.id; TeamName = $team.displayName; ChannelId = $ch.id; ChannelName = $ch.displayName
                     ChannelType = $ch.membershipType; SiteUrl = $site.SiteUrl; FilesFolderUrl = $site.FilesFolderUrl; DriveId = $site.DriveId
-                    FolderItemId = $site.FolderItemId; OwnSharePointSite = ($ch.membershipType -in 'private', 'shared')
+                    FolderItemId = $site.FolderItemId; SiteSource = $site.SiteSource; OwnSharePointSite = ($ch.membershipType -in 'private', 'shared')
                 })
 
             if ($ch.membershipType -in 'private', 'shared') {

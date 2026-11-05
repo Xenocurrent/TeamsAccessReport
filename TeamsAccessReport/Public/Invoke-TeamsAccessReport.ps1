@@ -138,7 +138,7 @@
 
         $summary = Export-TarSummary -Context $ctx -SharePointIncluded:$IncludeSharePoint
         Write-TarLog ("Done: Status={0} Teams={1} Rows={2} Drift={3} (High={4}) Errors={5} -> {6}" -f $summary.ResultStatus, $summary.Teams, $summary.AccessRows, $summary.DriftFindings, $summary.DriftHigh, $summary.Errors, $ctx.OutputPath)
-        if ($summary.Errors) { Write-TarLog "See Errors.csv - $($summary.Errors) steps failed (403 = missing permission/consent)." -Level WARN }
+        if ($summary.Errors) { Write-TarLog "See Errors.csv - $($summary.Errors) steps failed (HTTP 403 = missing permission/consent; other errors include the reason)." -Level WARN }
         $summary
     } finally {
         Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null

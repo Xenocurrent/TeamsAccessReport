@@ -33,6 +33,8 @@ $script:GraphRoutes = @(
     @{ P = '/incomingChannels'; R = { New-GraphOk @{ value = @() } } }
     @{ P = "/teams/$script:G1/channels\?"; R = { New-GraphOk @{ value = @(@{ id = 'C1'; displayName = 'General'; membershipType = 'standard' }, @{ id = 'C2'; displayName = 'Payroll'; membershipType = 'private' }, @{ id = 'C3'; displayName = 'Partner'; membershipType = 'shared' }) } } }
     @{ P = "/teams/$script:G2/channels\?"; R = { New-GraphOk @{ value = @(@{ id = 'C4'; displayName = 'General'; membershipType = 'standard' }) } } }
+    @{ P = '/channels/C4/filesFolder'; R = { New-GraphErr 404 'Folder location for this channel is not ready yet, please try again later.' } }
+    @{ P = "/groups/$($script:G2)/drive/root"; R = { New-GraphOk @{ id = 'FC4'; webUrl = "$($script:SiteByChannel['C4'])/Shared Documents"; parentReference = @{ driveId = 'DC4' }; sharepointIds = @{ siteUrl = $script:SiteByChannel['C4'] } } } }
     @{ P = '/channels/(C\d)/filesFolder'; R = { param($m) New-GraphOk @{ id = "F$($m.Groups[1].Value)"; webUrl = "$($script:SiteByChannel[$m.Groups[1].Value])/Shared Documents/x"; parentReference = @{ driveId = "D$($m.Groups[1].Value)" } } } }
     @{ P = '/drives/D(C\d)/items/'; R = { param($m) New-GraphOk @{ id = "F$($m.Groups[1].Value)"; sharepointIds = @{ siteUrl = $script:SiteByChannel[$m.Groups[1].Value] } } } }
     @{ P = '/channels/C2/allMembers'; R = { if ($global:TarTest.FailAllMembers) { return New-GraphErr 403 'Forbidden' }; New-GraphOk @{ value = @((New-Member 'u1' 'Anna' 'anna@contoso.se' @('owner'))) } } }
