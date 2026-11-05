@@ -196,3 +196,39 @@ Describe 'Connection profiles end to end' {
         { Invoke-TeamsAccessReport -ProfileName contoso -AllTeams -OutputPath (Join-Path $TestDrive 'gone') } | Should -Throw -ExpectedMessage "*'contoso' not found*"
     }
 }
+
+Describe 'Start screen drives the whole run (no console input)' {
+    BeforeAll { Reset-TarTestState; Set-TarTestMocks; Remove-Item $env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    It 'uses the connection and options from the window, saves the profile and asks the rest with pop-ups' {
+        $out = Join-Path $TestDrive 'fromform'
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $true }
+        Mock -ModuleName TeamsAccessReport Test-TarGuiAvailable { $true }
+        Mock -ModuleName TeamsAccessReport Read-Host { throw 'Console input must not be needed' }
+        Mock -ModuleName TeamsAccessReport Show-TarMessageBox { $true }
+        Mock -ModuleName TeamsAccessReport Select-TarItem { $Rows }
+        $record = InModuleScope TeamsAccessReport -Parameters @{ c = $AppArgs } {
+            New-TarProfileRecord -Name 'contoso' -TenantId '11111111-1111-1111-1111-111111111111' -TenantQuery 'contoso.onmicrosoft.com' -AuthMode AppOnly -ClientId $c.ClientId -CertificateThumbprint $c.CertificateThumbprint -Options @{ IncludeSharePoint = $true }
+        }
+        $result = [pscustomobject]@{
+            Errors = [ordered]@{}; ProfileRecord = $record
+            Connection = [pscustomobject]@{ AuthMode = 'AppOnly'; TenantId = '11111111-1111-1111-1111-111111111111'; ClientId = $AppArgs.ClientId; CertificateThumbprint = $AppArgs.CertificateThumbprint; PnPClientId = $null; ProfileName = 'contoso' }
+            Options = [pscustomobject]@{ IncludeSharePoint = $true; IncludeUserAssociations = $true; SelectChannels = $false; OutputPath = $out }
+        }
+        Mock -ModuleName TeamsAccessReport Show-TarStartForm { $result }.GetNewClosure()
+        $s = Invoke-TeamsAccessReport -SelectionMode Gui -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $s.ResultStatus | Should -Be 'Complete'
+        Test-Path (Join-Path $out 'SPAssignments.csv') | Should -BeTrue
+        Test-Path (Join-Path $out 'ExternalAssociations.csv') | Should -BeTrue
+        (Get-TeamsAccessReportProfile).Name | Should -Be @('contoso')
+        Should -Invoke -ModuleName TeamsAccessReport Show-TarMessageBox -Times 1 -Exactly -ParameterFilter { $Text -like 'Continue with tenant*' }
+        Should -Invoke -ModuleName TeamsAccessReport Read-Host -Times 0 -Exactly
+    }
+    It 'cancelling the window ends the run without creating the output folder' {
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $true }
+        Mock -ModuleName TeamsAccessReport Test-TarGuiAvailable { $true }
+        Mock -ModuleName TeamsAccessReport Show-TarStartForm { }
+        $out = Join-Path $TestDrive 'cancelled'
+        $s = Invoke-TeamsAccessReport -SelectionMode Gui -OutputPath $out -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $s | Should -BeNullOrEmpty; Test-Path $out | Should -BeFalse
+    }
+}

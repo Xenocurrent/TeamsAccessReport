@@ -28,7 +28,7 @@
         Auto, Gui (pop-up), ConsoleGrid or Menu - used for the certificate and sign-in method pickers.
     .EXAMPLE
         New-TeamsAccessReportProfile
-        Interactive: asks for the tenant, the app ID and lets you pick the certificate.
+        Interactive: one window on Windows (tenant, sign-in method, app ID, certificate picker), console prompts elsewhere.
     .EXAMPLE
         New-TeamsAccessReportProfile -Name contoso -Tenant contoso -ClientId '<APP_ID>' -CertificateThumbprint '<THUMBPRINT>'
         Unattended.
@@ -59,6 +59,11 @@
         $t = Resolve-TarTenantOrPassThrough -Tenant $Tenant
         if (-not $Name) { $Name = ($t.Query -split '\.')[0] }
         $record = New-TarProfileRecord -Name $Name -TenantId $t.TenantId -TenantQuery $t.Query -AuthMode $mode -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -PnPClientId $PnPClientId
+    } elseif ($canPrompt -and (Resolve-TarSelectionMode -Mode $SelectionMode) -eq 'Gui' -and (Test-TarGuiAvailable)) {
+        $start = Show-TarStartForm -ConnectionOnly
+        if (-not $start) { Write-TarLog 'Cancelled; no profile saved.' -Level WARN; return }
+        $record = $start.ProfileRecord
+        $Force = $true   # the window already refuses an existing name unless that profile was selected for editing
     } elseif ($canPrompt) {
         $record = Read-TarConnectionWizard -Name $Name -Tenant $Tenant -AuthMode $mode -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -PnPClientId $PnPClientId -SelectionMode $SelectionMode
         if (-not $record) { Write-TarLog 'Cancelled; no profile saved.' -Level WARN; return }

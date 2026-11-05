@@ -1,5 +1,18 @@
 ﻿# Changelog
 
+## 2.2.0 – 2026-11-05
+### Added
+- Windows start window (Windows Forms): connection (saved profile, tenant with live check, sign-in method, app ID,
+  certificate drop-down, optional PnP app ID, save/update profile) and report options (SharePoint, user associations,
+  channel selection, output folder with folder picker) in one place. All errors are validated and shown at once.
+- Tenant confirmation and the remaining yes/no questions are pop-ups in Gui mode. With the window, an interactive run
+  needs no console input.
+- Profiles remember the last report options (`Options`); command-line switches still win.
+- `New-TeamsAccessReportProfile` uses the same window (connection part only) on Windows.
+
+### Changed
+- `build.ps1` measures `Gui.ps1` coverage on Windows only.
+
 ## 2.1.0 – 2026-11-05
 ### Added
 - Connection profiles: `New-TeamsAccessReportProfile`, `Get-TeamsAccessReportProfile`, `Remove-TeamsAccessReportProfile`

@@ -513,3 +513,156 @@ Describe 'Interactive connection flow (simulated answers)' {
         (Get-TeamsAccessReportProfile -Name 'ke*').Name | Should -Be 'keep'
     }
 }
+
+Describe 'Test-TarStartFormInput (start screen validation)' {
+    BeforeAll {
+        $env:TEAMSACCESSREPORT_PROFILE_PATH = Join-Path $TestDrive 'form.json'
+        function New-State { param([hashtable]$Change = @{})
+            $s = @{ SelectedProfile = ''; Tenant = 'etherlinked'; AuthMode = 'AppOnly'; ClientId = '9d35d536-264b-43be-b838-1e34f2702154'; CertificateThumbprint = ('AB' * 20)
+                PnPClientId = ''; SaveProfile = $true; ProfileName = ''; IncludeSharePoint = $true; IncludeUserAssociations = $true; SelectChannels = $false
+                OutputPath = (Join-Path $TestDrive 'out1'); ConnectionOnly = $false }
+            foreach ($k in $Change.Keys) { $s[$k] = $Change[$k] }
+            $s
+        }
+    }
+    AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    BeforeEach {
+        Remove-Item $env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue
+        Mock -ModuleName TeamsAccessReport Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = 'https://login.microsoftonline.com/3c28c7a0-9a0a-435d-b574-9345d1a794f7/v2.0'; tenant_region_scope = 'EU'; cloud_instance_name = 'microsoftonline.com' } } }
+        Mock -ModuleName TeamsAccessReport Get-TarCertificateCandidate { [pscustomobject]@{ Id = ('AB' * 20); Subject = 'CN=t'; Expires = '2099-01-01'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true } }
+        Mock -ModuleName TeamsAccessReport Write-TarLog { }
+    }
+    It 'valid app-only input: connection, options and a profile named after the tenant' {
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State) } { Test-TarStartFormInput -State $s }
+        $r.Errors.Count | Should -Be 0
+        $r.Connection.TenantId | Should -Be '3c28c7a0-9a0a-435d-b574-9345d1a794f7'; $r.Connection.ProfileName | Should -Be 'etherlinked'
+        $r.ProfileRecord.Options.IncludeSharePoint | Should -BeTrue
+        $r.Options.IncludeUserAssociations | Should -BeTrue
+    }
+    It 'collects every error at once' {
+        Mock -ModuleName TeamsAccessReport Get-TarCertificateCandidate { }
+        $state = New-State @{ ClientId = 'app'; PnPClientId = 'x'; OutputPath = '' }
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = $state } { Test-TarStartFormInput -State $s }
+        @($r.Errors.Keys) | Should -Be @('ClientId', 'Certificate', 'PnPClientId', 'OutputPath')
+        $r.ProfileRecord | Should -BeNullOrEmpty
+    }
+    It 'unknown tenant is reported on the Tenant field' {
+        Mock -ModuleName TeamsAccessReport Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 400; Body = $null } }
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State) } { Test-TarStartFormInput -State $s }
+        $r.Errors.Tenant | Should -Match 'not found'
+    }
+    It 'delegated: no tenant needed, user associations forced off, SharePoint requires a PnP app' {
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ AuthMode = 'Delegated'; Tenant = ''; SaveProfile = $false }) } { Test-TarStartFormInput -State $s }
+        @($r.Errors.Keys) | Should -Be @('SharePoint')
+        $r.Options.IncludeUserAssociations | Should -BeFalse
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ AuthMode = 'Delegated'; Tenant = ''; SaveProfile = $false; PnPClientId = '9d35d536-264b-43be-b838-1e34f2702154' }) } { Test-TarStartFormInput -State $s }
+        $r.Errors.Count | Should -Be 0; $r.Connection.TenantId | Should -BeNullOrEmpty
+    }
+    It 'refuses an output folder that already contains a run' {
+        $o = Join-Path $TestDrive 'used'; $null = New-Item -ItemType Directory $o -Force; Set-Content (Join-Path $o 'Selection.json') '{}'
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ OutputPath = $o }) } { Test-TarStartFormInput -State $s }
+        $r.Errors.OutputPath | Should -Match 'already contains a run'
+    }
+    It 'refuses to overwrite another profile, but updates the selected one' {
+        InModuleScope TeamsAccessReport { Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'etherlinked' -TenantId '3c28c7a0-9a0a-435d-b574-9345d1a794f7' -AuthMode Delegated) }
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State) } { Test-TarStartFormInput -State $s }
+        $r.Errors.ProfileName | Should -Match 'already exists'
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ SelectedProfile = 'etherlinked' }) } { Test-TarStartFormInput -State $s }
+        $r.Errors.Count | Should -Be 0; $r.ProfileRecord.AuthMode | Should -Be 'AppOnly'
+    }
+    It 'keeps the profile name for an unchanged selected profile that is not re-saved' {
+        InModuleScope TeamsAccessReport { Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'p1' -TenantId '3c28c7a0-9a0a-435d-b574-9345d1a794f7' -AuthMode AppOnly -ClientId '9d35d536-264b-43be-b838-1e34f2702154' -CertificateThumbprint ('AB' * 20)) }
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ SelectedProfile = 'p1'; SaveProfile = $false }) } { Test-TarStartFormInput -State $s }
+        $r.Connection.ProfileName | Should -Be 'p1'
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ SelectedProfile = 'p1'; SaveProfile = $false; ClientId = '11111111-2222-3333-4444-555555555555' }) } { Test-TarStartFormInput -State $s }
+        $r.Connection.ProfileName | Should -BeNullOrEmpty
+    }
+    It 'connection-only mode ignores report options and stores no options' {
+        $r = InModuleScope TeamsAccessReport -Parameters @{ s = (New-State @{ ConnectionOnly = $true; OutputPath = '' }) } { Test-TarStartFormInput -State $s }
+        $r.Errors.Count | Should -Be 0; $r.ProfileRecord.Options | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Start screen window (Windows Forms)' -Skip:(-not $IsWindows) {
+    BeforeAll {
+        $env:TEAMSACCESSREPORT_PROFILE_PATH = Join-Path $TestDrive 'win.json'
+        InModuleScope TeamsAccessReport { Add-Type -AssemblyName System.Windows.Forms, System.Drawing }
+        $script:profiles = @(
+            [pscustomobject]@{ Name = 'old'; TenantId = 't-old'; TenantQuery = 'old.onmicrosoft.com'; AuthMode = 'Delegated'; ClientId = $null; CertificateThumbprint = $null; PnPClientId = $null; Options = $null; UpdatedAt = '2026-01-01T00:00:00' }
+            [pscustomobject]@{ Name = 'etherlinked'; TenantId = '3c28c7a0-9a0a-435d-b574-9345d1a794f7'; TenantQuery = 'etherlinked.onmicrosoft.com'; AuthMode = 'AppOnly'; ClientId = '9d35d536-264b-43be-b838-1e34f2702154'; CertificateThumbprint = ('AB' * 20); PnPClientId = $null; Options = [pscustomobject]@{ IncludeSharePoint = $true; IncludeUserAssociations = $true; SelectChannels = $false }; UpdatedAt = '2026-11-05T00:00:00' }
+        )
+        $script:certs = @([pscustomobject]@{ Id = ('AB' * 20); Subject = 'CN=TeamsAccessReport-Test'; Expires = '2027-11-05'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true })
+    }
+    AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    It 'pre-selects the newest profile and fills every field from it' {
+        InModuleScope TeamsAccessReport -Parameters @{ p = $script:profiles; c = $script:certs } {
+            $ui = New-TarStartForm -Profiles $p -Certificates $c -Defaults @{ OutputPath = 'C:\out' }
+            try {
+                $ui.Profile.SelectedIndex | Should -Be 2
+                $ui.Tenant.Text | Should -Be 'etherlinked.onmicrosoft.com'; $ui.ClientId.Text | Should -Be '9d35d536-264b-43be-b838-1e34f2702154'
+                $ui.Certificate.SelectedIndex | Should -Be 0; $ui.SharePoint.Checked | Should -BeTrue; $ui.Associations.Checked | Should -BeTrue
+                $ui.Save.Text | Should -Be 'Update profile'; $ui.Output.Text | Should -Be 'C:\out'
+                (Get-TarStartFormState -Ui $ui).CertificateThumbprint | Should -Be ('AB' * 20)
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'command-line switches win over profile options' {
+        InModuleScope TeamsAccessReport -Parameters @{ p = $script:profiles; c = $script:certs } {
+            $ui = New-TarStartForm -Profiles $p -Certificates $c -Defaults @{ OutputPath = 'C:\out'; IncludeSharePoint = $false }
+            try { $ui.SharePoint.Checked | Should -BeFalse; $ui.Associations.Checked | Should -BeTrue } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'delegated disables app fields and user associations' {
+        InModuleScope TeamsAccessReport -Parameters @{ p = $script:profiles; c = $script:certs } {
+            $ui = New-TarStartForm -Profiles $p -Certificates $c
+            try {
+                $ui.Delegated.Checked = $true; Update-TarStartFormState -Ui $ui
+                $ui.ClientId.Enabled | Should -BeFalse; $ui.Certificate.Enabled | Should -BeFalse
+                $ui.Associations.Enabled | Should -BeFalse; $ui.Associations.Checked | Should -BeFalse
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'new connection with a single certificate pre-selects it; a typed thumbprint is used as typed' {
+        InModuleScope TeamsAccessReport -Parameters @{ c = $script:certs } {
+            $ui = New-TarStartForm -Certificates $c
+            try {
+                $ui.Profile.SelectedIndex | Should -Be 0; $ui.Certificate.SelectedIndex | Should -Be 0
+                $ui.Certificate.SelectedIndex = -1; $ui.Certificate.Text = 'cd' * 20
+                (Get-TarStartFormState -Ui $ui).CertificateThumbprint | Should -Be ('cd' * 20)
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'Start keeps the window open on errors and closes with OK when valid' {
+        InModuleScope TeamsAccessReport -Parameters @{ p = $script:profiles; c = $script:certs; out = (Join-Path $TestDrive 'winout') } {
+            Mock Test-TarStartFormInput { [pscustomobject]@{ Errors = [ordered]@{ Tenant = 'Tenant: bad' }; Connection = $null; Options = $null; ProfileRecord = $null } }
+            $ui = New-TarStartForm -Profiles $p -Certificates $c -Defaults @{ OutputPath = $out }
+            try {
+                Invoke-TarStartFormSubmit -Ui $ui | Should -BeFalse
+                $ui.Error.Text | Should -Be 'Tenant: bad'; $ui.Form.DialogResult | Should -Be 'None'
+                Mock Test-TarStartFormInput { [pscustomobject]@{ Errors = [ordered]@{}; Connection = 'c'; Options = 'o'; ProfileRecord = $null } }
+                Invoke-TarStartFormSubmit -Ui $ui | Should -BeTrue
+                $ui.Form.DialogResult | Should -Be 'OK'; $ui.Result.Connection | Should -Be 'c'
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'Check shows the resolved tenant or the error' {
+        InModuleScope TeamsAccessReport {
+            Mock Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = 'https://login.microsoftonline.com/3c28c7a0-9a0a-435d-b574-9345d1a794f7/v2.0'; tenant_region_scope = 'EU' } } }
+            $ui = New-TarStartForm
+            try {
+                $ui.Tenant.Text = 'etherlinked'; Invoke-TarStartFormCheck -Ui $ui
+                $ui.TenantStatus.Text | Should -Match '3c28c7a0'; $ui.ProfileName.Text | Should -Be 'etherlinked'
+                Mock Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 400; Body = $null } }
+                Invoke-TarStartFormCheck -Ui $ui
+                $ui.TenantStatus.Text | Should -Match 'not found'
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'connection-only window hides report options and always saves' {
+        InModuleScope TeamsAccessReport {
+            $ui = New-TarStartForm -ConnectionOnly
+            try { $ui.SharePoint.Parent.Parent.Visible | Should -BeFalse; $ui.Save.Checked | Should -BeTrue; $ui.Save.Enabled | Should -BeFalse; $ui.Start.Text | Should -Be 'Save' }
+            finally { $ui.Form.Dispose() }
+        }
+    }
+}

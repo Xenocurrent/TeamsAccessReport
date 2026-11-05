@@ -51,8 +51,10 @@
         Base delay for exponential backoff.
     .EXAMPLE
         Invoke-TeamsAccessReport
-        Interactive start screen: pick a saved connection, create one (tenant, app, certificate - asked once), or sign
-        in as yourself. Then confirm the tenant and select teams and channels.
+        Interactive. On Windows one window asks for everything: saved connection or tenant (name, domain or ID), sign-in
+        method, app ID, certificate (picked from the store), report options and output folder. Tenant confirmation and
+        team/channel selection are pop-ups too. Elsewhere (or with -SelectionMode Menu) the same questions are asked in
+        the console.
     .EXAMPLE
         Invoke-TeamsAccessReport -ProfileName contoso -IncludeSharePoint
         Saved connection, no IDs to type.
@@ -102,8 +104,24 @@
     $resumeSelection = $null
     $selectionPath = Join-Path ([System.IO.Path]::GetFullPath($OutputPath)) $script:TarFile.Selection
     if ($Resume -and (Test-Path $selectionPath)) { $resumeSelection = Get-Content -Path $selectionPath -Raw -Encoding utf8 | ConvertFrom-Json }
-    $conn = Resolve-TarConnection -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ProfileName $ProfileName `
-        -ResumeSelection $resumeSelection -CanPrompt:$canPrompt -SelectionMode $SelectionMode
+    $noConnectionParameters = -not ($ProfileName -or $TenantId -or $ClientId -or $CertificateThumbprint -or $Resume)
+    $useStartForm = $noConnectionParameters -and $canPrompt -and (Resolve-TarSelectionMode -Mode $SelectionMode) -eq 'Gui' -and (Test-TarGuiAvailable)
+    if ($useStartForm) {
+        # One window for connection + report options; switches given on the command line pre-fill and win.
+        $defaults = @{ OutputPath = $OutputPath }
+        foreach ($k in 'IncludeSharePoint', 'IncludeUserAssociations', 'SelectChannels', 'PnPClientId') { if ($PSBoundParameters.ContainsKey($k)) { $defaults[$k] = $PSBoundParameters[$k] } }
+        $start = Show-TarStartForm -Defaults $defaults
+        if (-not $start) { Write-TarLog 'Cancelled on the start screen.' -Level WARN; return }
+        if ($start.ProfileRecord) { Save-TarProfile -ProfileRecord $start.ProfileRecord -Confirm:$false }
+        $conn = $start.Connection
+        $IncludeSharePoint = [switch]$start.Options.IncludeSharePoint
+        $IncludeUserAssociations = [switch]$start.Options.IncludeUserAssociations
+        $SelectChannels = [switch]$start.Options.SelectChannels
+        $OutputPath = $start.Options.OutputPath
+    } else {
+        $conn = Resolve-TarConnection -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ProfileName $ProfileName `
+            -ResumeSelection $resumeSelection -CanPrompt:$canPrompt -SelectionMode $SelectionMode
+    }
     if (-not $conn) { Write-TarLog 'Cancelled at connection selection.' -Level WARN; return }
     $appOnly = $conn.AuthMode -eq 'AppOnly'
     $spClientId = if ($PnPClientId) { $PnPClientId } elseif ($conn.PnPClientId) { $conn.PnPClientId } elseif ($appOnly) { $conn.ClientId } else { $null }
@@ -132,7 +150,7 @@
 
     try {
         Connect-TarGraph -Context $ctx -TenantId $conn.TenantId
-        if ($interactive -and -not $Force -and -not (Read-TarYesNo "Continue with tenant '$($ctx.TenantName ?? $ctx.TenantId)' ($($ctx.TenantDomain ?? $ctx.TenantId))?")) {
+        if ($interactive -and -not $Force -and -not (Read-TarYesNo "Continue with tenant '$($ctx.TenantName ?? $ctx.TenantId)' ($($ctx.TenantDomain ?? $ctx.TenantId))?" -Mode $SelectionMode)) {
             Write-TarLog 'Cancelled at tenant confirmation.' -Level WARN
             return
         }
@@ -143,7 +161,7 @@
             Reset-TarIncompleteWork -Context $ctx
         } else {
             $selection = Get-TarTeamSelection -Context $ctx -TeamId $TeamId -ChannelId $ChannelId -AllTeams:$AllTeams -Interactive:$interactive `
-                -SelectChannels:$SelectChannels -Force:$Force -SelectionMode $SelectionMode
+                -SelectChannels:$SelectChannels -Force:$Force -SelectionMode $SelectionMode -NoChannelPrompt:$useStartForm
             if (-not $selection) { return }
             Save-TarSelection -Context $ctx -Selection $selection
         }
