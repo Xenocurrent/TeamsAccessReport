@@ -41,6 +41,7 @@ Pickers are pop-ups (Out-GridView) on Windows and numbered menus elsewhere; `-Se
 | `New-TeamsAccessReportProfile` | Create a profile (interactive, or fully with `-Tenant -ClientId -CertificateThumbprint`) |
 | `Get-TeamsAccessReportProfile` | List profiles |
 | `Remove-TeamsAccessReportProfile -Name x` | Delete a profile (the app and certificate are not touched) |
+| `New-TeamsAccessReportPnPApp -ProfileName x` | Create the PnP app for **delegated** SharePoint scanning and store it in the profile (also the **Create...** button in the window). Not needed for app-only. |
 
 Profiles hold identifiers only – tenant ID, app ID, certificate thumbprint – never secrets; the private key stays in the
 certificate store. Location: `%LOCALAPPDATA%\TeamsAccessReport\profiles.json` (Windows) or

@@ -310,7 +310,7 @@ function Test-TarStartFormInput {
     }
     if (-not $State.ConnectionOnly) {
         if ($options.IncludeSharePoint -and $mode -eq 'Delegated' -and -not $pnp -and -not $errors.Contains('PnPClientId')) {
-            $errors.SharePoint = 'SharePoint with delegated sign-in needs a dedicated PnP app ID (field above), or use app-only.'
+            $errors.SharePoint = "SharePoint with delegated sign-in needs a PnP app ID: click 'Create...' next to the field, or choose App-only (its app already covers SharePoint)."
         }
         if (-not $options.OutputPath) { $errors.OutputPath = 'Output folder: choose a folder.' }
         elseif (Test-Path -LiteralPath (Join-Path $options.OutputPath $script:TarFile.Selection)) { $errors.OutputPath = "Output folder: $($options.OutputPath) already contains a run; choose another folder." }
@@ -340,4 +340,53 @@ function Test-TarStartFormInput {
         Options = [pscustomobject]$options
         ProfileRecord = $record
     }
+}
+
+# --- PnP app for delegated SharePoint scanning ----------------------------------------------------------------
+
+function Test-TarPnPInstalled {
+    # Checks availability without loading PnP.PowerShell into this session (assembly conflict with the Graph SDK).
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    [bool](Get-Module -ListAvailable -Name PnP.PowerShell)
+}
+
+function Invoke-TarPnPRegistrationWorker {
+    # Seam: starts Worker/Register-PnPApp.ps1 in a visible pwsh window (sign-in and consent need the user) and waits.
+    # -WaitCallback runs every 200 ms while waiting (the start window uses it to stay responsive).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Tenant, [Parameter(Mandatory)][string]$ApplicationName, [Parameter(Mandatory)][string]$ResultPath,
+        [scriptblock]$WaitCallback, [ValidateRange(60, 3600)][int]$TimeoutSeconds = 900)
+    $psi = [System.Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+    foreach ($a in '-NoProfile', '-NoLogo', '-File', (Join-Path $PSScriptRoot '..' 'Worker' 'Register-PnPApp.ps1'), '-Tenant', $Tenant, '-ApplicationName', $ApplicationName, '-ResultPath', $ResultPath) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while (-not $p.WaitForExit(200)) {
+            if ($WaitCallback) { & $WaitCallback }
+            if ((Get-Date) -gt $deadline) { try { $p.Kill() } catch { $null = $_ }; throw "PnP app registration did not finish within $TimeoutSeconds s." }
+        }
+    } finally { $p.Dispose() }
+}
+
+function New-TarPnPApp {
+    # Registers the PnP app and returns its client ID. Throws with an actionable message on every failure path.
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Tenant, [string]$ApplicationName = 'TeamsAccessReport-PnP', [scriptblock]$WaitCallback)
+    if (-not (Test-TarPnPInstalled)) { throw 'PnP.PowerShell is not installed. Run: Install-Module PnP.PowerShell -Scope CurrentUser' }
+    if (-not $PSCmdlet.ShouldProcess($Tenant, "Register Entra app '$ApplicationName' (delegated SharePoint AllSites.FullControl)")) { return }
+    $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) "tar-pnp-$([guid]::NewGuid()).json"
+    try {
+        Write-TarLog "Registering PnP app '$ApplicationName' in $Tenant in a separate PowerShell window ..."
+        Invoke-TarPnPRegistrationWorker -Tenant $Tenant -ApplicationName $ApplicationName -ResultPath $resultPath -WaitCallback $WaitCallback
+        if (-not (Test-Path $resultPath)) { throw 'The registration window was closed before it finished.' }
+        $r = Get-Content -Path $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if (-not $r.ok) { throw "PnP app registration failed: $($r.error)" }
+        $id = ConvertTo-TarClientId ([string]$r.clientId)
+        Write-TarLog "PnP app '$ApplicationName' registered: $id"
+        $id
+    } finally { Remove-Item -Path $resultPath -ErrorAction SilentlyContinue }
 }

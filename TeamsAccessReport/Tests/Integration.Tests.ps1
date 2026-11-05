@@ -121,7 +121,7 @@ Describe 'Validation and safeguards' {
         @{ Name = '-ChannelId without -TeamId'; Splat = @{ ChannelId = 'C1'; AllTeams = $true }; Pattern = 'ChannelId requires' }
         @{ Name = '-TeamId and -AllTeams'; Splat = @{ TeamId = 'x'; AllTeams = $true }; Pattern = 'either -TeamId' }
         @{ Name = '-Resume with -AllTeams'; Splat = @{ Resume = $true; AllTeams = $true }; Pattern = 'Resume reads' }
-        @{ Name = 'SharePoint delegated without PnP app'; Splat = @{ AllTeams = $true; IncludeSharePoint = $true }; Pattern = 'dedicated Entra app' }
+        @{ Name = 'SharePoint delegated without PnP app'; Splat = @{ AllTeams = $true; IncludeSharePoint = $true }; Pattern = 'New-TeamsAccessReportPnPApp' }
     ) {
         { Invoke-TeamsAccessReport @Splat -OutputPath (Join-Path $TestDrive ([guid]::NewGuid())) -WarningAction SilentlyContinue } | Should -Throw -ExpectedMessage "*$Pattern*"
     }

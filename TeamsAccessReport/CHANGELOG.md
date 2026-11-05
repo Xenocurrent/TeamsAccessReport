@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 2.4.0 – 2026-11-05
+### Added
+- Guided PnP app setup for delegated SharePoint scanning. The start window has a **Create...** button next to the PnP
+  app ID with a guide (why it is needed, exactly what is registered, requirements) and a one-click registration:
+  `Register-PnPEntraIDAppForInteractiveLogin` runs in a separate PowerShell window (`Worker/Register-PnPApp.ps1`) with
+  one delegated permission (SharePoint `AllSites.FullControl`), and the client ID is filled in and saved with the profile.
+- `New-TeamsAccessReportPnPApp -ProfileName <name>` does the same from the console and updates the profile.
+- A hint under the PnP field says when it is needed (delegated + SharePoint) and when not (app-only).
+
 ## 2.3.0 – 2026-11-05
 ### Added
 - Windows check-box list for team and channel selection (replaces Out-GridView multi-select): a check box per row,
