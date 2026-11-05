@@ -1,0 +1,89 @@
+﻿# Microsoft Graph-klient. Invoke-TarGraphRaw är den ENDA punkten som rör Invoke-MgGraphRequest
+# (testsöm). Statuskod läses deterministiskt via -StatusCodeVariable, inte genom att tolka felmeddelanden.
+# SDK:ns inbyggda retry-hanterare (429/503/504, Retry-After) konfigureras i Connect-TarGraph.
+
+function Invoke-TarGraphRaw {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Uri)
+    $statusCode = 0; $headers = $null
+    $body = Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputType Hashtable -SkipHttpErrorCheck `
+        -StatusCodeVariable 'statusCode' -ResponseHeadersVariable 'headers' -ErrorAction Stop
+    $retryAfter = 0
+    $raw = Get-TarProperty $headers 'Retry-After'
+    if ($raw) { [void][int]::TryParse([string](@($raw)[0]), [ref]$retryAfter) }
+    [pscustomobject]@{ StatusCode = [int]$statusCode; Body = $body; RetryAfterSeconds = $retryAfter }
+}
+
+function Invoke-TarGraphRequest {
+    # Yttre retry (max 3) ovanpå SDK-retry: tar 500/502 och uttömd SDK-retry. Returnerar body eller $null (404 med -AllowNotFound).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Uri, [switch]$AllowNotFound)
+    $outerMax = 3
+    for ($attempt = 1; $attempt -le $outerMax; $attempt++) {
+        Write-TarLog "GET $Uri ($attempt/$outerMax)" -Level DEBUG
+        $r = Invoke-TarGraphRaw -Uri $Uri
+        if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { return $r.Body }
+        if ($r.StatusCode -eq 404 -and $AllowNotFound) { return $null }
+        $graphError = Get-TarProperty (Get-TarProperty $r.Body 'error') 'message'
+        if ($r.StatusCode -notin $script:TarRetryableStatus -or $attempt -eq $outerMax) {
+            throw [System.Net.Http.HttpRequestException]::new("Graph HTTP $($r.StatusCode) för $Uri :: $graphError")
+        }
+        $wait = Get-TarBackoffDelay -Attempt ($attempt + 2) -BaseDelaySeconds $Context.BaseDelaySeconds -RetryAfterSeconds $r.RetryAfterSeconds
+        Write-TarLog "Graph HTTP $($r.StatusCode) efter SDK-retry; yttre försök $attempt/$outerMax, väntar $wait ms" -Level WARN -Data @{ uri = $Uri }
+        Start-Sleep -Milliseconds $wait
+    }
+}
+
+function Get-TarGraphCollection {
+    # Följer @odata.nextLink. Skickar element i pipeline – anropa som @(Get-TarGraphCollection ...).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Uri)
+    $next = $Uri
+    while ($next) {
+        $page = Invoke-TarGraphRequest -Context $Context -Uri $next
+        foreach ($v in @(Get-TarProperty $page 'value')) { if ($null -ne $v) { $v } }
+        $next = Get-TarProperty $page '@odata.nextLink'
+    }
+}
+
+function Get-TarRequiredGraphScope {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([switch]$AppOnly)
+    $common = 'Team.ReadBasic.All', 'Channel.ReadBasic.All', 'TeamMember.Read.All', 'ChannelMember.Read.All', 'Files.Read.All', 'GroupMember.Read.All'
+    if ($AppOnly) { return [string[]]($common + 'User.Read.All') }
+    return [string[]](@('User.Read') + $common + 'User.ReadBasic.All')
+}
+
+function Connect-TarGraph {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context, [string]$TenantId)
+    $scopes = Get-TarRequiredGraphScope -AppOnly:$Context.AppOnly
+    if ($Context.AppOnly) {
+        Write-TarLog "Ansluter app-only. Tenant=$TenantId ClientId=$($Context.ClientId)"
+        Connect-MgGraph -TenantId $TenantId -ClientId $Context.ClientId -CertificateThumbprint $Context.CertificateThumbprint -NoWelcome -ErrorAction Stop
+    } else {
+        $connectArgs = @{ Scopes = $scopes; NoWelcome = $true; ErrorAction = 'Stop' }
+        if ($TenantId) { $connectArgs.TenantId = $TenantId }
+        Write-TarLog "Ansluter delegerat. Tenant=$(if ($TenantId) { $TenantId } else { '<identifieras vid inloggning>' })"
+        Write-TarLog 'Delegerat läge begränsas av din egen roll – app-only ger komplett bild.' -Level WARN
+        Connect-MgGraph @connectArgs
+    }
+    $mg = Get-MgContext
+    if (-not $mg -or -not $mg.TenantId) { throw 'Ingen Graph-kontext efter inloggning.' }
+    $null = Set-MgRequestContext -MaxRetry $Context.MaxRetries -RetryDelay $Context.BaseDelaySeconds
+    $Context.TenantId = $mg.TenantId
+    $Context.AuthType = [string]$mg.AuthType
+
+    try {
+        $org = @(Get-TarProperty (Invoke-TarGraphRequest -Context $Context -Uri "$($Context.GraphBase)/organization?`$select=id,displayName,verifiedDomains") 'value')[0]
+        $domains = @(Get-TarProperty $org 'verifiedDomains')
+        $Context.TenantName = Get-TarProperty $org 'displayName'
+        $Context.TenantDomain = Get-TarProperty (@($domains | Where-Object { Get-TarProperty $_ 'isDefault' })[0]) 'name'
+        $Context.InitialDomain = Get-TarProperty (@($domains | Where-Object { Get-TarProperty $_ 'isInitial' })[0]) 'name'
+    } catch { Write-TarLog "Kunde inte läsa tenantnamn: $($_.Exception.Message). Fortsätter med ID." -Level WARN }
+
+    Write-TarLog ('Tenant: {0} | {1} | {2} | {3} | {4}' -f $Context.TenantId, ($Context.TenantName ?? '-'), ($Context.TenantDomain ?? '-'), ($mg.Account ?? $mg.AppName), $Context.AuthType)
+    $missing = @($scopes | Where-Object { $_ -ne 'User.Read' -and $_ -notin @($mg.Scopes) })
+    if ($missing) { Write-TarLog "Token saknar: $($missing -join ', ') – motsvarande steg ger 403 (se Errors.csv/Teams.csv)." -Level WARN }
+}

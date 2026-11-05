@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Visa PowerShell-version
+        run: $PSVersionTable | Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: Installera beroenden
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Scope CurrentUser -Force -ErrorAction Stop
+          Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -ErrorAction Stop
+          Get-Module -ListAvailable PSScriptAnalyzer, Pester, Microsoft.Graph.Authentication |
+            Sort-Object Name, Version -Descending | Select-Object Name, Version -Unique | Format-Table | Out-String | Write-Host
+
+      - name: Analys + tester + täckning
+        run: ./TeamsAccessReport/build.ps1
+
+      - name: Ladda upp testresultat
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: |
+            TeamsAccessReport/testResults.xml
+            TeamsAccessReport/coverage.xml
+          if-no-files-found: warn

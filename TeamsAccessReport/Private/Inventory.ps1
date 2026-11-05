@@ -1,0 +1,134 @@
+﻿# Fas 1 – Teams-inventering via Graph. Checkpoint per team; rader skrivs först när teamet är klart.
+
+function ConvertTo-TarAccessRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Member, [Parameter(Mandatory)]$Team, $Channel,
+        [Parameter(Mandatory)][string]$Scope, [Parameter(Mandatory)][string]$AccessPath, [string]$SourceTeamId)
+    $roles = @(Get-TarProperty $Member 'roles')
+    $role = if ($roles -contains 'owner') { 'Owner' } elseif ($roles -contains 'guest') { 'Guest' } else { 'Member' }
+    [pscustomobject]@{
+        TeamId = $Team.id; TeamName = $Team.displayName; Scope = $Scope
+        ChannelId = Get-TarProperty $Channel 'id'; ChannelName = Get-TarProperty $Channel 'displayName'; ChannelType = Get-TarProperty $Channel 'membershipType'
+        UserId = Get-TarProperty $Member 'userId'; DisplayName = Get-TarProperty $Member 'displayName'; Email = Get-TarProperty $Member 'email'
+        UserTenantId = Get-TarProperty $Member 'tenantId'; Role = $role; RawRoles = ($roles -join ';')
+        AccessPath = $AccessPath; SourceTeamId = $SourceTeamId; MemberType = Get-TarProperty $Member '@odata.type'
+    }
+}
+
+function Get-TarChannelSite {
+    # filesFolder -> driveItem -> sharepointIds.siteUrl (fungerar för alla kanaltyper och managed paths).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$TeamId, [Parameter(Mandatory)][string]$ChannelId)
+    $base = $Context.GraphBase
+    $ff = Invoke-TarGraphRequest -Context $Context -Uri "$base/teams/$TeamId/channels/$ChannelId/filesFolder"
+    $folderId = Get-TarProperty $ff 'id'
+    $driveId = Get-TarProperty (Get-TarProperty $ff 'parentReference') 'driveId'
+    $siteUrl = $null
+    if ($driveId -and $folderId) {
+        $item = Invoke-TarGraphRequest -Context $Context -Uri "$base/drives/$driveId/items/$folderId`?`$select=id,sharepointIds"
+        $siteUrl = Get-TarProperty (Get-TarProperty $item 'sharepointIds') 'siteUrl'
+    }
+    [pscustomobject]@{ SiteUrl = $siteUrl; FilesFolderUrl = Get-TarProperty $ff 'webUrl'; DriveId = $driveId; FolderItemId = $folderId }
+}
+
+function Invoke-TarTeamInventory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][object[]]$Teams, [Parameter(Mandatory)][hashtable]$ChannelFilter)
+    $base = $Context.GraphBase
+    $done = Get-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.Graph
+    $i = 0
+    foreach ($team in $Teams) {
+        $i++
+        if ($done.Contains($team.id)) { Write-TarLog "[$i] Hoppar över (klar): $($team.displayName)"; continue }
+        Write-Progress -Activity 'Fas 1: Teams' -Status "$($team.displayName) ($i/$($Teams.Count))" -PercentComplete (100 * $i / [math]::Max(1, $Teams.Count))
+        Write-TarLog "[$i/$($Teams.Count)] Team '$($team.displayName)' ($($team.id))"
+        $failed = [System.Collections.Generic.List[string]]::new()
+        $access = [System.Collections.Generic.List[object]]::new()
+        $channelRecords = [System.Collections.Generic.List[object]]::new()
+        $incomingRecords = [System.Collections.Generic.List[object]]::new()
+        $fail = { param($stage, $channelId, $err) $failed.Add($stage); Add-TarErrorRecord -Context $Context -Stage ($stage -replace ':.*$') -TeamId $team.id -ChannelId $channelId -Message $err.Exception.Message }
+
+        $info = $null
+        try { $info = Invoke-TarGraphRequest -Context $Context -Uri "$base/teams/$($team.id)?`$select=id,displayName,visibility,isArchived,webUrl,createdDateTime" }
+        catch { & $fail 'TeamInfo' $null $_ }
+
+        try {
+            foreach ($m in @(Get-TarGraphCollection -Context $Context -Uri "$base/teams/$($team.id)/members")) {
+                $access.Add((ConvertTo-TarAccessRecord -Member $m -Team $team -Scope 'Team' -AccessPath 'TeamMembership' -SourceTeamId $team.id))
+            }
+        } catch { & $fail 'TeamMembers' $null $_ }
+
+        try {
+            foreach ($ic in @(Get-TarGraphCollection -Context $Context -Uri "$base/teams/$($team.id)/incomingChannels")) {
+                $hostTenant = Get-TarProperty $ic 'tenantId'
+                $incomingRecords.Add([pscustomobject]@{ TeamId = $team.id; TeamName = $team.displayName; ChannelId = Get-TarProperty $ic 'id'
+                        ChannelName = Get-TarProperty $ic 'displayName'; ChannelType = Get-TarProperty $ic 'membershipType'; HostTenantId = $hostTenant
+                        CrossTenant = [bool]($hostTenant -and $hostTenant -ne $Context.TenantId)
+                    })
+            }
+        } catch { & $fail 'IncomingChannels' $null $_ }
+
+        $channels = @()
+        try { $channels = @(Get-TarGraphCollection -Context $Context -Uri "$base/teams/$($team.id)/channels?`$select=id,displayName,membershipType") }
+        catch { & $fail 'Channels' $null $_ }
+        if ($ChannelFilter.ContainsKey($team.id)) {
+            $sel = $ChannelFilter[$team.id]
+            $channels = @($channels | Where-Object { $sel.Contains([string]$_.id) })
+            Write-TarLog "    Kanalurval tillämpat: $($channels.Count) kanaler"
+        }
+
+        foreach ($ch in $channels) {
+            $site = [pscustomobject]@{ SiteUrl = $null; FilesFolderUrl = $null; DriveId = $null; FolderItemId = $null }
+            try { $site = Get-TarChannelSite -Context $Context -TeamId $team.id -ChannelId $ch.id }
+            catch { & $fail "FilesFolder:$($ch.displayName)" $ch.id $_ }
+            $channelRecords.Add([pscustomobject]@{ TeamId = $team.id; TeamName = $team.displayName; ChannelId = $ch.id; ChannelName = $ch.displayName
+                    ChannelType = $ch.membershipType; SiteUrl = $site.SiteUrl; FilesFolderUrl = $site.FilesFolderUrl; DriveId = $site.DriveId
+                    FolderItemId = $site.FolderItemId; OwnSharePointSite = ($ch.membershipType -in 'private', 'shared')
+                })
+
+            if ($ch.membershipType -in 'private', 'shared') {
+                try {
+                    $members = @(Get-TarGraphCollection -Context $Context -Uri "$base/teams/$($team.id)/channels/$($ch.id)/allMembers")
+                    foreach ($cm in $members) {
+                        $src = Get-TarProperty $cm '@microsoft.graph.originalSourceMembershipUrl'
+                        $srcTeam = if ($src -and $src -match '/teams/([^/]+)') { $Matches[1] } else { $null }
+                        $path = if ($src) { 'IndirectViaSharedTeam' } else { 'DirectChannelMember' }
+                        $access.Add((ConvertTo-TarAccessRecord -Member $cm -Team $team -Channel $ch -Scope 'Channel' -AccessPath $path -SourceTeamId $srcTeam))
+                    }
+                    Write-TarLog "    Kanal '$($ch.displayName)' [$($ch.membershipType)]: $($members.Count) medlemskapsrader"
+                } catch { & $fail "AllMembers:$($ch.displayName)" $ch.id $_ }
+            }
+        }
+
+        Write-TarRecord -Context $Context -Name $script:TarFile.TeamsAccess -InputObject $access
+        Write-TarRecord -Context $Context -Name $script:TarFile.Channels -InputObject $channelRecords
+        Write-TarRecord -Context $Context -Name $script:TarFile.IncomingChannels -InputObject $incomingRecords
+        Write-TarRecord -Context $Context -Name $script:TarFile.Teams -InputObject @([pscustomobject]@{
+                TeamId = $team.id; TeamName = $team.displayName; Visibility = Get-TarProperty $info 'visibility'; IsArchived = Get-TarProperty $info 'isArchived'
+                WebUrl = Get-TarProperty $info 'webUrl'; CreatedDateTime = Get-TarProperty $info 'createdDateTime'; Channels = $channels.Count
+                Completeness = if ($failed.Count) { 'Partial' } else { 'Complete' }; FailedStages = ($failed -join ';')
+            })
+        Add-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.Graph -Key $team.id
+    }
+    Write-Progress -Activity 'Fas 1: Teams' -Completed
+}
+
+function Reset-TarIncompleteWork {
+    # Vid -Resume: arkivera gamla fel och ta bort team med Completeness=Partial så att de körs om.
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)]$Context)
+    $errFile = Get-TarStorePath $Context $script:TarFile.Errors
+    if ((Test-Path $errFile) -and $PSCmdlet.ShouldProcess($errFile, 'Arkivera')) {
+        $archived = Join-Path $Context.StateDir ('Errors_{0:yyyyMMdd_HHmmss}.csv' -f (Get-Date))
+        Move-Item $errFile $archived -Force
+        Write-TarLog "Tidigare fel arkiverade: $archived"
+    }
+    $partial = [string[]]@(Read-TarRecord -Context $Context -Name $script:TarFile.Teams | Where-Object Completeness -eq 'Partial' | ForEach-Object { $_.TeamId })
+    if ($partial.Count -eq 0) { return }
+    foreach ($name in $script:TarFile.TeamsAccess, $script:TarFile.Channels, $script:TarFile.IncomingChannels, $script:TarFile.Teams) {
+        $keep = @(Read-TarRecord -Context $Context -Name $name | Where-Object { $_.TeamId -notin $partial })
+        Set-TarRecord -Context $Context -Name $name -InputObject $keep
+    }
+    Remove-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.Graph -Key $partial
+    Write-TarLog "Kör om $($partial.Count) ofullständiga team: $($partial -join ', ')" -Level WARN
+}
