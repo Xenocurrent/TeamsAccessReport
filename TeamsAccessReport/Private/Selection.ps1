@@ -82,7 +82,9 @@ function Select-TarItem {
 function Read-TarYesNo {
     [CmdletBinding()]
     [OutputType([bool])]
-    param([Parameter(Mandatory)][string]$Prompt, [bool]$Default = $true)
+    param([Parameter(Mandatory)][string]$Prompt, [bool]$Default = $true, [string]$Mode = 'Menu')
+    # Gui mode: Yes/No pop-up instead of console input.
+    if ((Resolve-TarSelectionMode -Mode $Mode) -eq 'Gui' -and (Test-TarGuiAvailable)) { return (Show-TarMessageBox -Text $Prompt -Default $Default) }
     $suffix = if ($Default) { '[Y/n]' } else { '[y/N]' }
     while ($true) {
         $a = (Read-Host "$Prompt $suffix").Trim().ToLowerInvariant()
@@ -97,7 +99,7 @@ function Get-TarTeamSelection {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param([Parameter(Mandatory)]$Context, [string[]]$TeamId, [string[]]$ChannelId, [switch]$AllTeams,
-        [switch]$Interactive, [switch]$SelectChannels, [switch]$Force, [string]$SelectionMode = 'Auto')
+        [switch]$Interactive, [switch]$SelectChannels, [switch]$Force, [string]$SelectionMode = 'Auto', [switch]$NoChannelPrompt)
     $base = $Context.GraphBase
     $filter = @{}
     if ($TeamId) {
@@ -119,7 +121,8 @@ function Get-TarTeamSelection {
     }
     if ($ChannelId) { foreach ($t in $teams) { $filter[$t.id] = [System.Collections.Generic.HashSet[string]]::new([string[]]$ChannelId) } }
 
-    $pick = $SelectChannels -or ($Interactive -and -not $Force -and (Read-TarYesNo 'Do you want to select specific channels per team? (No = all channels)' $false))
+    # -NoChannelPrompt: the start screen already answered this question.
+    $pick = $SelectChannels -or ($Interactive -and -not $Force -and -not $NoChannelPrompt -and (Read-TarYesNo 'Do you want to select specific channels per team? (No = all channels)' $false -Mode $SelectionMode))
     if ($pick) {
         foreach ($t in $teams) {
             try {

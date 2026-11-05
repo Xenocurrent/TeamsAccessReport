@@ -36,7 +36,9 @@ $cfg.Run.Exit = $false
 $cfg.Run.PassThru = $true
 $cfg.Output.Verbosity = 'Detailed'
 $cfg.CodeCoverage.Enabled = $true
-$cfg.CodeCoverage.Path = @((Join-Path $root 'Private'), (Join-Path $root 'Public'))
+# Gui.ps1 (Windows Forms) can only execute on Windows; it is measured there and excluded elsewhere.
+$coverageFiles = @(Get-ChildItem (Join-Path $root 'Private'), (Join-Path $root 'Public') -Filter *.ps1 | Where-Object { $IsWindows -or $_.Name -ne 'Gui.ps1' })
+$cfg.CodeCoverage.Path = @($coverageFiles.FullName)
 $cfg.CodeCoverage.OutputPath = Join-Path $root 'coverage.xml'
 $cfg.TestResult.Enabled = $true
 $cfg.TestResult.OutputPath = Join-Path $root 'testResults.xml'

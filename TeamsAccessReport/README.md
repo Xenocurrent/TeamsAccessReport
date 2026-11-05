@@ -6,13 +6,26 @@ resolution of group claims to users, and drift between Teams and SharePoint.
 
 ```powershell
 Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
-Invoke-TeamsAccessReport            # start screen: pick a saved connection or create one (asked once)
+Invoke-TeamsAccessReport            # Windows: one window for connection + options, then pop-ups only
 ```
 
 ## Connecting to a tenant
 
-Nothing has to be edited in a command. Run `Invoke-TeamsAccessReport` without connection parameters and the start
-screen offers saved connections, **New connection…** or **Sign in as myself**. A new connection asks for:
+Nothing has to be edited in a command. On **Windows**, `Invoke-TeamsAccessReport` without connection parameters opens
+one window with everything an interactive run needs – no console input:
+
+| Section | Fields |
+|---|---|
+| Connection | Saved connection (newest pre-selected) · Tenant + **Check** · App-only / Delegated · App (client) ID · Certificate (drop-down from the store, or type a thumbprint) · optional PnP app ID · Save/Update profile |
+| Report | SharePoint (phases 2-4) · users' teams in other tenants · choose channels per team · output folder + **Browse** |
+
+**Start** validates everything at once (tenant lookup, GUID, certificate present with private key, output folder
+unused) and lists all problems in the window instead of failing later. Tenant confirmation, team selection and channel
+selection follow as pop-ups. Report options are remembered per profile; switches on the command line win.
+`New-TeamsAccessReportProfile` opens the same window without the report section.
+
+Elsewhere (Linux/macOS, or `-SelectionMode Menu`) the same questions are asked in the console. Saved connections,
+**New connection…** or **Sign in as myself** are offered first; a new connection asks for:
 
 1. **Tenant** – type it the way you know it: `contoso`, `contoso.com`, `admin@contoso.com` or the tenant ID. It is
    resolved to the tenant ID through Microsoft's public OpenID discovery document (no sign-in) and shown for confirmation.
@@ -67,7 +80,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 | No script-scope variables in logic; everything flows through `-Context` | Explicit dependencies, testable, PSScriptAnalyzer can verify parameter usage |
 | Phases communicate only through the files defined in `Constants.ps1` (`$script:TarFile`) | Each phase can be re-run or resumed in isolation; the files are a data contract |
 | Functions returning collections emit elements to the pipeline; callers wrap with `@(...)` | Avoids PowerShell's unary-comma/`$null` pitfalls (three v1 bugs came from here) |
-| UI (`Read-Host`, menu) lives only in `Selection.ps1`; `Test-TarCanPrompt` is the only console check | Everything else runs unattended and is tested without a console |
+| UI lives only in `Selection.ps1` (console) and `Gui.ps1` (Windows Forms); validation of the window is `Test-TarStartFormInput` in `Connection.ps1`; `Test-TarCanPrompt` is the only console check | Everything else runs unattended and is tested without a console |
 | The worker never loads the Graph SDK | Known PnP ↔ Graph assembly conflict; a unit test verifies this at token level |
 
 ## Design decisions (short ADRs)
@@ -122,6 +135,8 @@ Severity is not lowered by a cause – the access is real, the cause only tells 
 Tests: `Tests/Unit.Tests.ps1` (pure functions, claim parsing, drift logic) and `Tests/Integration.Tests.ps1`
 (the full flow through the adapter seams; interruption + `-Resume` is compared byte for byte with a full run).
 Phase 2 runs `InProcess` in tests – the process boundary is covered by a smoke test, not by Pester.
+The Windows Forms window is built (not shown) and exercised in tests on Windows only; `Gui.ps1` is excluded from the
+coverage figure on other platforms.
 
 Contributing: create a branch, open a pull request, and wait for green CI on both platforms (`main` is protected).
 

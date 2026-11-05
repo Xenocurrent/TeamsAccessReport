@@ -182,7 +182,8 @@ function New-TarProfileRecord {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$TenantId, [string]$TenantQuery,
-        [Parameter(Mandatory)][ValidateSet('AppOnly', 'Delegated')][string]$AuthMode, [string]$ClientId, [string]$CertificateThumbprint, [string]$PnPClientId)
+        [Parameter(Mandatory)][ValidateSet('AppOnly', 'Delegated')][string]$AuthMode, [string]$ClientId, [string]$CertificateThumbprint, [string]$PnPClientId,
+        [hashtable]$Options)
     if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "Profile name '$Name' is invalid: use 1-64 letters, digits, '.', '_' or '-'." }
     if ($AuthMode -eq 'AppOnly') {
         if (-not $ClientId -or -not $CertificateThumbprint) { throw 'An app-only profile needs both a client ID and a certificate thumbprint.' }
@@ -193,6 +194,8 @@ function New-TarProfileRecord {
     [pscustomobject]@{
         Name = $Name; TenantId = $TenantId; TenantQuery = $TenantQuery; AuthMode = $AuthMode
         ClientId = $ClientId; CertificateThumbprint = $CertificateThumbprint; PnPClientId = ($PnPClientId ? $PnPClientId : $null)
+        # Last report options chosen on the start screen (pre-filled next time). Never secrets.
+        Options = $(if ($Options) { [pscustomobject]@{ IncludeSharePoint = [bool]$Options['IncludeSharePoint']; IncludeUserAssociations = [bool]$Options['IncludeUserAssociations']; SelectChannels = [bool]$Options['SelectChannels'] } } else { $null })
         UpdatedAt = (Get-Date).ToString('o')
     }
 }
@@ -273,4 +276,68 @@ function Resolve-TarConnection {
     }
     if ($conn.AuthMode -eq 'AppOnly') { Assert-TarCertificate -Thumbprint $conn.CertificateThumbprint }
     $conn
+}
+
+function Test-TarStartFormInput {
+    # Validates the start screen (Gui.ps1) - kept here so it is testable on every platform.
+    # Returns @{ Errors = ordered field -> message; Connection; Options; ProfileRecord (to save, or $null) }.
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][hashtable]$State)
+    $errors = [ordered]@{}
+    $mode = [string]$State.AuthMode
+    $tenant = $null
+    $tenantText = ([string]$State.Tenant).Trim()
+    if ($tenantText) {
+        try { $tenant = Resolve-TarTenantOrPassThrough -Tenant $tenantText } catch { $errors.Tenant = "Tenant: $($_.Exception.Message)" }
+    } elseif ($mode -eq 'AppOnly' -or $State.SaveProfile) {
+        $errors.Tenant = 'Tenant: enter it (e.g. contoso, contoso.com, admin@contoso.com or the tenant ID).'
+    }
+    $clientId = $null; $thumb = $null; $pnp = $null
+    if ($mode -eq 'AppOnly') {
+        try { $clientId = ConvertTo-TarClientId ([string]$State.ClientId) } catch { $errors.ClientId = "App ID: $($_.Exception.Message)" }
+        try { $thumb = ConvertTo-TarThumbprint ([string]$State.CertificateThumbprint); Assert-TarCertificate -Thumbprint $thumb }
+        catch { $errors.Certificate = "Certificate: $($_.Exception.Message)" }
+    }
+    if (([string]$State.PnPClientId).Trim()) {
+        try { $pnp = ConvertTo-TarClientId ([string]$State.PnPClientId) } catch { $errors.PnPClientId = "PnP app ID: $($_.Exception.Message)" }
+    }
+    $options = [ordered]@{
+        IncludeSharePoint = [bool]$State.IncludeSharePoint
+        IncludeUserAssociations = [bool]$State.IncludeUserAssociations -and $mode -eq 'AppOnly'
+        SelectChannels = [bool]$State.SelectChannels
+        OutputPath = ([string]$State.OutputPath).Trim()
+    }
+    if (-not $State.ConnectionOnly) {
+        if ($options.IncludeSharePoint -and $mode -eq 'Delegated' -and -not $pnp -and -not $errors.Contains('PnPClientId')) {
+            $errors.SharePoint = 'SharePoint with delegated sign-in needs a dedicated PnP app ID (field above), or use app-only.'
+        }
+        if (-not $options.OutputPath) { $errors.OutputPath = 'Output folder: choose a folder.' }
+        elseif (Test-Path -LiteralPath (Join-Path $options.OutputPath $script:TarFile.Selection)) { $errors.OutputPath = "Output folder: $($options.OutputPath) already contains a run; choose another folder." }
+    }
+    $record = $null
+    if ($State.SaveProfile -and $tenant -and $errors.Count -eq 0) {
+        $name = ([string]$State.ProfileName).Trim()
+        if (-not $name) { $name = ($tenant.Query -split '\.')[0] }
+        if ($name -ne [string]$State.SelectedProfile -and @(Read-TarProfileStore | Where-Object Name -eq $name).Count) {
+            $errors.ProfileName = "Profile: '$name' already exists; select it under 'Saved connection' or choose another name."
+        } else {
+            try {
+                $record = New-TarProfileRecord -Name $name -TenantId $tenant.TenantId -TenantQuery $tenant.Query -AuthMode $mode -ClientId $clientId `
+                    -CertificateThumbprint $thumb -PnPClientId $pnp -Options $(if ($State.ConnectionOnly) { $null } else { @{} + $options })
+            } catch { $errors.ProfileName = "Profile: $($_.Exception.Message)" }
+        }
+    }
+    # Keep a profile name only when the connection really is that profile (saved now, or selected and unchanged).
+    $profileName = if ($record) { $record.Name } else { $null }
+    if (-not $profileName -and $State.SelectedProfile -and $tenant) {
+        $sel = @(Read-TarProfileStore | Where-Object Name -eq $State.SelectedProfile)
+        if ($sel.Count -and $sel[0].TenantId -eq $tenant.TenantId -and $sel[0].AuthMode -eq $mode -and [string]$sel[0].ClientId -eq [string]$clientId -and [string]$sel[0].CertificateThumbprint -eq [string]$thumb) { $profileName = $sel[0].Name }
+    }
+    [pscustomobject]@{
+        Errors = $errors
+        Connection = [pscustomobject]@{ AuthMode = $mode; TenantId = $(if ($tenant) { $tenant.TenantId } else { $null }); ClientId = $clientId; CertificateThumbprint = $thumb; PnPClientId = $pnp; ProfileName = $profileName }
+        Options = [pscustomobject]$options
+        ProfileRecord = $record
+    }
 }
