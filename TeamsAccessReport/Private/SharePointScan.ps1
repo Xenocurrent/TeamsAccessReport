@@ -59,7 +59,7 @@ function ConvertTo-TarSpAssignmentRecord {
             SiteUrl = $SiteUrl; WebUrl = $WebUrl; Scope = $Scope; ObjectPath = $ObjectPath; ListTitle = $ListTitle; ItemId = $ItemId
             PrincipalType = Get-TarProperty $m 'PrincipalType'; PrincipalTitle = Get-TarProperty $m 'Title'
             PrincipalLogin = Get-TarProperty $m 'LoginName'; PrincipalEmail = Get-TarProperty $m 'Email'
-            Roles = ($roles -join ';'); LimitedAccessOnly = ($roles.Count -gt 0 -and $effective.Count -eq 0)
+            Roles = ($roles -join ';'); LimitedAccessOnly = ($roles.Count -gt 0 -and $effective.Count -eq 0); AssociatedGroup = $null
         }
     }
 }
@@ -114,6 +114,27 @@ function Invoke-TarSpWebScan {
     }
 }
 
+function Get-TarSpAssociatedGroup {
+    # Group title -> 'Owner' | 'Member' | 'Visitor' for the site's associated (default) groups.
+    # Best effort: a failure only means drift findings cannot be attributed to a default, so it is logged, not fatal.
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)]$Connection)
+    $map = @{}
+    $nav = 'AssociatedOwnerGroup', 'AssociatedMemberGroup', 'AssociatedVisitorGroup'
+    $url = "$SiteUrl/_api/web?`$select=" + ((@($nav | ForEach-Object { "$_/Title" })) -join ',') + '&$expand=' + ($nav -join ',')
+    try {
+        $web = Invoke-TarSpRequest -Context $Context -Url $url -Connection $Connection
+        foreach ($n in $nav) {
+            $title = Get-TarProperty (Get-TarProperty $web $n) 'Title'
+            if ($title) { $map[[string]$title] = $n -replace '^Associated(\w+)Group$', '$1' }
+        }
+    } catch {
+        Write-TarLog "    Associated groups unavailable for $SiteUrl ($($_.Exception.Message)); drift Cause will be empty for this site." -Level WARN
+    }
+    $map
+}
+
 function Invoke-TarSpSiteScan {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)]$Connection)
@@ -121,7 +142,7 @@ function Invoke-TarSpSiteScan {
     foreach ($a in @(Get-TarSpCollection -Context $Context -Connection $Connection -Url "$SiteUrl/_api/web/siteusers?`$filter=IsSiteAdmin eq true&`$select=Title,LoginName,Email,PrincipalType")) {
         $records.Add([pscustomobject]@{ SiteUrl = $SiteUrl; WebUrl = $SiteUrl; Scope = 'SiteCollectionAdmin'; ObjectPath = $SiteUrl; ListTitle = $null; ItemId = $null
                 PrincipalType = Get-TarProperty $a 'PrincipalType'; PrincipalTitle = Get-TarProperty $a 'Title'; PrincipalLogin = Get-TarProperty $a 'LoginName'
-                PrincipalEmail = Get-TarProperty $a 'Email'; Roles = 'SiteCollectionAdmin'; LimitedAccessOnly = $false
+                PrincipalEmail = Get-TarProperty $a 'Email'; Roles = 'SiteCollectionAdmin'; LimitedAccessOnly = $false; AssociatedGroup = $null
             })
     }
     $memberships = [System.Collections.Generic.List[object]]::new()
@@ -134,7 +155,14 @@ function Invoke-TarSpSiteScan {
                 })
         }
     }
-    foreach ($r in @(Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $SiteUrl -Connection $Connection)) { $records.Add($r) }
+    $associated = Get-TarSpAssociatedGroup -Context $Context -SiteUrl $SiteUrl -Connection $Connection
+    foreach ($r in @(Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $SiteUrl -Connection $Connection)) {
+        # Associated groups are defined per web; only tag root-web assignments to SharePoint groups.
+        if ($r.Scope -eq 'Web' -and [string]$r.PrincipalType -eq '8' -and $r.WebUrl -eq $SiteUrl -and $associated.ContainsKey([string]$r.PrincipalTitle)) {
+            $r.AssociatedGroup = $associated[[string]$r.PrincipalTitle]
+        }
+        $records.Add($r)
+    }
     [pscustomobject]@{ Assignments = $records; GroupMembers = $memberships; GroupCount = $groups.Count }
 }
 

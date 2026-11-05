@@ -129,13 +129,17 @@
         Write-TarLog "Teams to process: $($selection.Teams.Count)"
 
         Invoke-TarTeamInventory -Context $ctx -Teams $selection.Teams -ChannelFilter $selection.ChannelFilter
+        # Header-only files mark "phase ran, 0 rows"; files of phases that did not run stay absent.
+        Initialize-TarRecordFile -Context $ctx -Name $script:TarFile.Teams, $script:TarFile.TeamsAccess, $script:TarFile.Channels, $script:TarFile.IncomingChannels
         if ($IncludeSharePoint) {
             Start-TarSharePointScan -Context $ctx -ClientId $spClientId
+            Initialize-TarRecordFile -Context $ctx -Name $script:TarFile.SpAssignments, $script:TarFile.SpGroupMembers
             Invoke-TarPrincipalResolution -Context $ctx
             Invoke-TarDriftAnalysis -Context $ctx
         }
         if ($IncludeUserAssociations -and $appOnly) { Invoke-TarExternalAssociationScan -Context $ctx }
 
+        Initialize-TarRecordFile -Context $ctx -Name $script:TarFile.Errors
         $summary = Export-TarSummary -Context $ctx -SharePointIncluded:$IncludeSharePoint
         Write-TarLog ("Done: Status={0} Teams={1} Rows={2} Drift={3} (High={4}) Errors={5} -> {6}" -f $summary.ResultStatus, $summary.Teams, $summary.AccessRows, $summary.DriftFindings, $summary.DriftHigh, $summary.Errors, $ctx.OutputPath)
         if ($summary.Errors) { Write-TarLog "See Errors.csv - $($summary.Errors) steps failed (HTTP 403 = missing permission/consent; other errors include the reason)." -Level WARN }

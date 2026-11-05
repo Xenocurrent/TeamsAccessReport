@@ -26,7 +26,7 @@ $script:GraphRoutes = @(
     @{ P = '/organization'; R = { New-GraphOk @{ value = @(@{ id = $script:Tenant; displayName = 'Contoso AB'; verifiedDomains = @(@{ name = 'contoso.se'; isDefault = $true; isInitial = $false }, @{ name = 'contoso.onmicrosoft.com'; isDefault = $false; isInitial = $true }) }) } } }
     @{ P = '/teams\?\$select=id,displayName,description,visibility$'; R = { New-GraphOk @{ value = @(@{ id = $script:G1; displayName = 'Finance'; description = 'Finance department'; visibility = 'private' }); '@odata.nextLink' = 'https://graph.microsoft.com/v1.0/teams?$skiptoken=p2' } } }
     @{ P = '/teams\?\$skiptoken=p2'; R = { New-GraphOk @{ value = @(@{ id = $script:G2; displayName = 'IT'; description = $null; visibility = 'public' }) } } }
-    @{ P = '/teams/([0-9a-f-]{36})\?'; R = { param($m) $n = if ($m.Groups[1].Value -eq $script:G1) { 'Finance' } else { 'IT' }; New-GraphOk @{ id = $m.Groups[1].Value; displayName = $n; visibility = 'private'; isArchived = ($m.Groups[1].Value -eq $script:G2); webUrl = "https://teams/$n"; createdDateTime = '2025-01-01T00:00:00Z' } } }
+    @{ P = '/teams/([0-9a-f-]{36})\?'; R = { param($m) $n = if ($m.Groups[1].Value -eq $script:G1) { 'Finance' } else { 'IT' }; $v = if ($m.Groups[1].Value -eq $script:G2) { 'public' } else { 'private' }; New-GraphOk @{ id = $m.Groups[1].Value; displayName = $n; visibility = $v; isArchived = ($m.Groups[1].Value -eq $script:G2); webUrl = "https://teams/$n"; createdDateTime = '2025-01-01T00:00:00Z' } } }
     @{ P = "/teams/$script:G1/members$"; R = { New-GraphOk @{ value = @((New-Member 'u1' 'Anna' 'anna@contoso.se' @('owner')), (New-Member 'u3' 'Bo' 'bo@contoso.se')) } } }
     @{ P = "/teams/$script:G2/members$"; R = { New-GraphOk @{ value = @((New-Member 'u1' 'Anna' 'anna@contoso.se' @('owner'))) } } }
     @{ P = "/teams/$script:G1/incomingChannels"; R = { New-GraphOk @{ value = @(@{ id = 'X1'; displayName = 'Fabrikam Partner'; membershipType = 'shared'; tenantId = $script:ExtTenant }) } } }
@@ -69,12 +69,14 @@ function Get-TestSpResponse {
     $site = $Connection.Url
     $name = ($site -split '/')[-1]
     switch -Regex ($Url) {
+        '_api/web\?\$select=AssociatedOwnerGroup' { return [pscustomobject]@{ AssociatedOwnerGroup = [pscustomobject]@{ Title = "$name Owners" }; AssociatedMemberGroup = [pscustomobject]@{ Title = "$name Members" }; AssociatedVisitorGroup = $null } }
         'siteusers\?' { if ($name -eq 'Finance') { return J '{"value":[{"Title":"Global Admin","LoginName":"i:0#.f|membership|ghost@contoso.se","Email":"ghost@contoso.se","PrincipalType":1}]}' } return J '{"value":[]}' }
         'sitegroups\?' { return J "{`"value`":[{`"Id`":3,`"Title`":`"$name Members`"},{`"Id`":4,`"Title`":`"$name Owners`"},{`"Id`":9,`"Title`":`"SharingLinks.abc.Flexible.def`"}]}" }
         'getbyid\(3\)/users' {
             switch ($name) {
                 'Finance' { return J "{`"value`":[{`"Title`":`"Finance Members`",`"LoginName`":`"c:0o.c|federateddirectoryclaimprovider|$script:G1`",`"Email`":`"`",`"PrincipalType`":4},{`"Title`":`"Cecilia`",`"LoginName`":`"i:0#.f|membership|cecilia_ext.com#ext#@contoso.onmicrosoft.com`",`"Email`":`"c@ext.com`",`"PrincipalType`":1}]}" }
-                'IT' { return J "{`"value`":[{`"Title`":`"IT Members`",`"LoginName`":`"c:0o.c|federateddirectoryclaimprovider|$script:G2`",`"Email`":`"`",`"PrincipalType`":4}]}" }
+                # Public team: Microsoft adds 'Everyone except external users' to the associated Members group by default.
+                'IT' { return J "{`"value`":[{`"Title`":`"IT Members`",`"LoginName`":`"c:0o.c|federateddirectoryclaimprovider|$script:G2`",`"Email`":`"`",`"PrincipalType`":4},{`"Title`":`"Everyone except external users`",`"LoginName`":`"c:0-.f|rolemanager|spo-grid-all-users/111`",`"Email`":`"`",`"PrincipalType`":4}]}" }
                 'Finance-Payroll' { return J '{"value":[{"Title":"Anna","LoginName":"i:0#.f|membership|anna@contoso.se","Email":"anna@contoso.se","PrincipalType":1},{"Title":"Bo","LoginName":"i:0#.f|membership|bo@contoso.se","Email":"bo@contoso.se","PrincipalType":1}]}' }
                 default { return J '{"value":[{"Title":"Bo","LoginName":"i:0#.f|membership|bo@contoso.se","Email":"bo@contoso.se","PrincipalType":1}]}' }
             }

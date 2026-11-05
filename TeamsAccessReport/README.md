@@ -1,4 +1,4 @@
-# TeamsAccessReport
+﻿# TeamsAccessReport
 
 Audit report of **actual** access in Microsoft Teams and the associated SharePoint sites:
 team and channel membership (direct/indirect, cross-tenant), SharePoint permissions down to item level,
@@ -59,12 +59,27 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 |---|---|---|
 | `Teams.csv` | TeamId | Inventory + `Completeness` / `FailedStages` |
 | `TeamsAccess.csv` | TeamId, ChannelId, UserId | Membership, `AccessPath` (TeamMembership / DirectChannelMember / IndirectViaSharedTeam) |
-| `Channels.csv` | ChannelId | Channel type and `SiteUrl` (input for phase 2) |
-| `SPAssignments.csv` | SiteUrl, Scope, ObjectPath | Raw role assignments (SiteCollectionAdmin/Web/List/Item) |
+| `Channels.csv` | ChannelId | Channel type, `SiteUrl` (input for phase 2) and `SiteSource` (FilesFolder / GroupDriveFallback) |
+| `IncomingSharedChannels.csv` | TeamId, ChannelId | Shared channels from other teams/tenants, `CrossTenant` |
+| `SPAssignments.csv` | SiteUrl, Scope, ObjectPath | Raw role assignments (SiteCollectionAdmin/Web/List/Item); `AssociatedGroup` = Owner/Member/Visitor for the site's default groups |
+| `SPGroupMembers.csv` | SiteUrl, GroupTitle | Members of each SharePoint group |
 | `EffectiveSharePointAccess.csv` | SiteUrl, UserId | Resolved access with `ExpansionPath` |
-| `DriftReport.csv` | SiteUrl, Finding, UserId | Drift findings, `Severity` High/Medium/Low/Info |
+| `DriftReport.csv` | SiteUrl, Finding, UserId | Drift findings, `Severity` High/Medium/Low/Info, `Cause` (see below) |
+| `ExternalAssociations.csv` | UserId, HostTenantId | Internal users' teams in other tenants (`-IncludeUserAssociations`) |
 | `Errors.csv` | – | Failed steps; archived to `state/` on `-Resume` |
+| `Selection.json` | – | Selected teams; schema 2: `AllChannels` (bool) + `ChannelIds` (always an array) |
 | `run.jsonl` | – | Structured log (one JSON object per line) |
+
+File presence is part of the contract: **present with only a header row** = the phase ran and found 0 rows;
+**absent** = the phase did not run (for example `-IncludeSharePoint` was not set). Column order is defined once in
+`Private/Constants.ps1` (`$script:TarColumns`); `-Resume` refuses folders written with a different column set.
+
+`Cause` in `DriftReport.csv` names a known by-design explanation; empty means no default explains the finding.
+Severity is not lowered by a cause – the access is real, the cause only tells you where it comes from.
+
+| Cause | Meaning |
+|---|---|
+| `PublicTeamDefault` | "Everyone except external users" in the associated Members group of a **public** team site. Microsoft adds it automatically; making the team private removes it. All conditions must hold (team site, public, root web, associated Members group), so a manually added grant is never attributed to the default. |
 
 ## Development
 

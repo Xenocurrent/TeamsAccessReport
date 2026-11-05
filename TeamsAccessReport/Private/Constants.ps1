@@ -17,6 +17,25 @@ $script:TarFile = @{
     Log                = 'run.jsonl'
 }
 
+# CSV column contract per file. Every record constructor must emit exactly these properties in this order;
+# the integration tests assert it. Used to write header-only files (phase ran, 0 rows) and to detect
+# output folders created by an incompatible version before -Resume appends to them.
+$script:TarColumns = @{
+    $script:TarFile.Teams             = @('TeamId', 'TeamName', 'Visibility', 'IsArchived', 'WebUrl', 'CreatedDateTime', 'Channels', 'Completeness', 'FailedStages')
+    $script:TarFile.TeamsAccess       = @('TeamId', 'TeamName', 'Scope', 'ChannelId', 'ChannelName', 'ChannelType', 'UserId', 'DisplayName', 'Email', 'UserTenantId', 'Role', 'RawRoles', 'AccessPath', 'SourceTeamId', 'MemberType')
+    $script:TarFile.Channels          = @('TeamId', 'TeamName', 'ChannelId', 'ChannelName', 'ChannelType', 'SiteUrl', 'FilesFolderUrl', 'DriveId', 'FolderItemId', 'SiteSource', 'OwnSharePointSite')
+    $script:TarFile.IncomingChannels  = @('TeamId', 'TeamName', 'ChannelId', 'ChannelName', 'ChannelType', 'HostTenantId', 'CrossTenant')
+    $script:TarFile.SpAssignments     = @('SiteUrl', 'WebUrl', 'Scope', 'ObjectPath', 'ListTitle', 'ItemId', 'PrincipalType', 'PrincipalTitle', 'PrincipalLogin', 'PrincipalEmail', 'Roles', 'LimitedAccessOnly', 'AssociatedGroup')
+    $script:TarFile.SpGroupMembers    = @('SiteUrl', 'GroupTitle', 'MemberTitle', 'MemberLogin', 'MemberEmail', 'MemberPrincipalType')
+    $script:TarFile.EffectiveSpAccess = @('SiteUrl', 'WebUrl', 'Scope', 'ObjectPath', 'ListTitle', 'ItemId', 'Roles', 'LimitedAccessOnly', 'AssociatedGroup', 'Kind', 'UserId', 'Upn', 'DisplayName', 'UserType', 'ExpansionPath')
+    $script:TarFile.Drift             = @('SiteUrl', 'Site', 'SiteKind', 'Finding', 'Severity', 'Cause', 'UserId', 'Upn', 'DisplayName', 'Scope', 'ObjectPath', 'Roles', 'ExpansionPath')
+    $script:TarFile.ExternalAssoc     = @('UserId', 'HostTenantId', 'HostTeamId', 'HostTeamName')
+    $script:TarFile.Errors            = @('Timestamp', 'Stage', 'TeamId', 'ChannelId', 'Target', 'Error')
+}
+
+# Selection.json schema written by this version. Import accepts 1 (ChannelIds = 'ALL' | id | [ids]) and 2.
+$script:TarSelectionSchemaVersion = 2
+
 $script:TarCheckpoint = @{
     Graph      = 'graph-completed.txt'
     SharePoint = 'sp-completed.txt'
@@ -31,6 +50,12 @@ $script:TarFinding = @{
     ItemNotInTeams      = 'ItemOrListAccessNotInTeams'
     TeamsNotInSp        = 'InTeamsNotInSharePoint'
     Unresolved          = 'UnresolvedPrincipal'
+}
+
+# Known by-design explanations for a drift finding. Empty Cause = no known default explains it.
+$script:TarCause = @{
+    # Microsoft adds 'Everyone except external users' to the associated Members group of public team sites.
+    PublicTeamDefault = 'PublicTeamDefault'
 }
 
 $script:TarRetryableStatus = @(429, 500, 502, 503, 504)

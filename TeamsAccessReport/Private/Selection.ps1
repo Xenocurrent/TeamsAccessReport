@@ -139,8 +139,13 @@ function Save-TarSelection {
     if ($filter.Count) { $rerun += ' -ChannelId ' + ((@($filter.Values | ForEach-Object { $_ } | Select-Object -Unique | ForEach-Object { "'$_'" })) -join ',') }
     if ($Context.AppOnly) { $rerun += " -ClientId '$($Context.ClientId)' -CertificateThumbprint '$($Context.CertificateThumbprint)'" }
     [pscustomobject]@{
-        SchemaVersion = 1; TenantId = $Context.TenantId; TenantName = $Context.TenantName; TenantDomain = $Context.TenantDomain; RunAt = (Get-Date).ToString('o')
-        Teams = @($teams | ForEach-Object { [pscustomobject]@{ Id = $_.id; Name = $_.displayName; ChannelIds = if ($filter.ContainsKey($_.id)) { @($filter[$_.id]) } else { 'ALL' } } })
+        SchemaVersion = $script:TarSelectionSchemaVersion; TenantId = $Context.TenantId; TenantName = $Context.TenantName; TenantDomain = $Context.TenantDomain; RunAt = (Get-Date).ToString('o')
+        Teams = @($teams | ForEach-Object {
+                $all = -not $filter.ContainsKey($_.id)
+                # Assigned via a typed variable: an if expression would unroll a one-element array into a scalar.
+                $ids = [string[]]@(if (-not $all) { $filter[$_.id] | Sort-Object })
+                [pscustomobject]@{ Id = $_.id; Name = $_.displayName; AllChannels = $all; ChannelIds = $ids }
+            })
         RerunCommand = $rerun
     } | ConvertTo-Json -Depth 5 | Set-Content (Get-TarStorePath $Context $script:TarFile.Selection) -Encoding utf8
 }
@@ -152,6 +157,11 @@ function Import-TarSelection {
     $sel = Get-Content (Get-TarStorePath $Context $script:TarFile.Selection) -Raw | ConvertFrom-Json
     if ($sel.TenantId -ne $Context.TenantId) { throw "Selection.json belongs to tenant $($sel.TenantId); the signed-in tenant is $($Context.TenantId)." }
     $filter = @{}
-    foreach ($t in $sel.Teams) { if ($t.ChannelIds -ne 'ALL') { $filter[$t.Id] = [System.Collections.Generic.HashSet[string]]::new([string[]]@($t.ChannelIds)) } }
+    if ([int]$sel.SchemaVersion -gt $script:TarSelectionSchemaVersion) { throw "Selection.json schema $($sel.SchemaVersion) is newer than this module supports ($script:TarSelectionSchemaVersion). Update the module." }
+    foreach ($t in $sel.Teams) {
+        # Schema 2: AllChannels + ChannelIds array. Schema 1: ChannelIds = 'ALL', a single id or an array of ids.
+        $all = if ($t.PSObject.Properties['AllChannels']) { [bool]$t.AllChannels } else { [string]$t.ChannelIds -eq 'ALL' }
+        if (-not $all) { $filter[$t.Id] = [System.Collections.Generic.HashSet[string]]::new([string[]]@($t.ChannelIds | Where-Object { $_ })) }
+    }
     @{ Teams = @($sel.Teams | ForEach-Object { @{ id = $_.Id; displayName = $_.Name } }); ChannelFilter = $filter }
 }

@@ -22,11 +22,50 @@ function Initialize-TarStore {
     param([Parameter(Mandatory)]$Context, [switch]$Resume)
     if ($Resume) {
         if (-not (Test-Path (Join-Path $Context.OutputPath $script:TarFile.Selection))) { throw "-Resume: $($script:TarFile.Selection) is missing in $($Context.OutputPath)." }
+        Assert-TarStoreSchema -Context $Context
     } elseif (Test-Path $Context.StateDir) {
         throw "$($Context.OutputPath) already contains a run. Use -Resume or a new -OutputPath."
     }
     if ($PSCmdlet.ShouldProcess($Context.StateDir, 'Create report directory')) {
         $null = New-Item -Path $Context.StateDir -ItemType Directory -Force
+    }
+}
+
+function Get-TarCsvHeader {
+    # Column names from the first line of an existing CSV file (our files never contain commas in column names).
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][string]$Path)
+    $line = Get-Content -Path $Path -TotalCount 1 -Encoding utf8
+    if (-not $line) { return [string[]]@() }
+    [string[]]@(($line -replace '^\uFEFF', '') -split ',' | ForEach-Object { $_.Trim().Trim('"') })
+}
+
+function Assert-TarStoreSchema {
+    # -Resume appends to existing files; refuse when they were written with a different column contract.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context)
+    foreach ($name in $script:TarColumns.Keys) {
+        $p = Get-TarStorePath $Context $name
+        if (-not (Test-Path $p)) { continue }
+        $actual = Get-TarCsvHeader -Path $p
+        $expected = $script:TarColumns[$name]
+        if (($actual -join ',') -ne ($expected -join ',')) {
+            throw "-Resume: $name in $($Context.OutputPath) was written by an incompatible version (columns differ). Start a new run without -Resume."
+        }
+    }
+}
+
+function Initialize-TarRecordFile {
+    # Writes a header-only CSV for each named file that does not exist yet.
+    # Contract: file present = the phase ran (header only = 0 rows); file absent = the phase did not run.
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string[]]$Name)
+    foreach ($n in $Name) {
+        if (-not $script:TarColumns.ContainsKey($n)) { throw "No column contract for $n (add it to `$script:TarColumns)." }
+        $p = Get-TarStorePath $Context $n
+        if ((Test-Path $p) -or -not $PSCmdlet.ShouldProcess($p, 'Write CSV header')) { continue }
+        Set-Content -Path $p -Value ((@($script:TarColumns[$n] | ForEach-Object { '"' + $_ + '"' })) -join ',') -Encoding utf8BOM
     }
 }
 
@@ -52,13 +91,14 @@ function Read-TarRecord {
 }
 
 function Set-TarRecord {
-    # Rewrites a whole file (used for recalculation/cleanup). An empty set removes the file.
+    # Rewrites a whole file (used for recalculation/cleanup). An empty set leaves a header-only file.
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Name, [AllowEmptyCollection()][object[]]$InputObject)
     $p = Get-TarStorePath $Context $Name
     if (-not $PSCmdlet.ShouldProcess($p, 'Rewrite')) { return }
     if (Test-Path $p) { Remove-Item $p -Force }
     if ($InputObject -and $InputObject.Count) { $InputObject | Protect-TarCsvValue | Export-Csv -Path $p -NoTypeInformation -Encoding utf8BOM }
+    else { Initialize-TarRecordFile -Context $Context -Name $Name }
 }
 
 function Add-TarErrorRecord {

@@ -194,3 +194,85 @@ Describe 'Get-TarSiteDrift' {
         }
     }
 }
+
+Describe 'Get-TarDriftCause' {
+    BeforeAll {
+        $script:pub = @{ Url = 'https://t/sites/a'; Kind = 'TeamSite'; Visibility = 'public' }
+        function New-EeeuRow { param($AssociatedGroup = 'Member', $Scope = 'Web', $WebUrl = 'https://t/sites/a', $Upn = 'EveryoneExceptExternalUsers')
+            [pscustomobject]@{ Kind = 'BroadGrant'; Upn = $Upn; Scope = $Scope; AssociatedGroup = $AssociatedGroup; WebUrl = $WebUrl } }
+    }
+    It 'explains EEEU in the associated Members group of a public team site' {
+        InModuleScope TeamsAccessReport -Parameters @{ site = $script:pub; row = (New-EeeuRow) } { Get-TarDriftCause -Site $site -Row $row | Should -Be 'PublicTeamDefault' }
+    }
+    It 'does not explain <Name>' -ForEach @(
+        @{ Name = 'a private team'; Site = @{ Url = 'https://t/sites/a'; Kind = 'TeamSite'; Visibility = 'private' }; Row = @{} }
+        @{ Name = 'a channel site'; Site = @{ Url = 'https://t/sites/a'; Kind = 'ChannelSite'; Visibility = 'public' }; Row = @{} }
+        @{ Name = 'a custom group'; Site = $null; Row = @{ AssociatedGroup = '' } }
+        @{ Name = 'the Visitors group'; Site = $null; Row = @{ AssociatedGroup = 'Visitor' } }
+        @{ Name = 'a list-level grant'; Site = $null; Row = @{ Scope = 'List' } }
+        @{ Name = 'a subweb'; Site = $null; Row = @{ WebUrl = 'https://t/sites/a/sub' } }
+        @{ Name = 'Everyone (incl. external)'; Site = $null; Row = @{ Upn = 'Everyone' } }
+    ) {
+        $s = if ($Site) { $Site } else { $script:pub }
+        $r = New-EeeuRow @Row
+        InModuleScope TeamsAccessReport -Parameters @{ site = $s; row = $r } { Get-TarDriftCause -Site $site -Row $row | Should -Be '' }
+    }
+}
+
+Describe 'Selection.json round trip' {
+    BeforeAll {
+        $script:ctx = InModuleScope TeamsAccessReport -Parameters @{ p = (Join-Path $TestDrive 'sel') } { $c = New-TarContext -OutputPath $p; $c.TenantId = 't1'; $null = New-Item -ItemType Directory -Path $p -Force; $c }
+    }
+    It 'writes ChannelIds as an array even for one channel, and AllChannels as a boolean' {
+        InModuleScope TeamsAccessReport -Parameters @{ ctx = $script:ctx } {
+            $f = @{ A = [System.Collections.Generic.HashSet[string]]::new([string[]]@('c1')) }
+            Save-TarSelection -Context $ctx -Selection @{ Teams = @(@{ id = 'A'; displayName = 'a' }, @{ id = 'B'; displayName = 'b' }); ChannelFilter = $f }
+            $raw = Get-Content (Get-TarStorePath $ctx 'Selection.json') -Raw
+            $raw | Should -Match '"ChannelIds":\s*\[\s*"c1"\s*\]'
+            $raw | Should -Match '"ChannelIds":\s*\[\s*\]'
+            $j = $raw | ConvertFrom-Json
+            $j.SchemaVersion | Should -Be 2
+            $j.Teams[0].AllChannels | Should -BeFalse; $j.Teams[1].AllChannels | Should -BeTrue
+            $back = Import-TarSelection -Context $ctx
+            $back.ChannelFilter.Keys | Should -Be @('A'); $back.ChannelFilter['A'].Contains('c1') | Should -BeTrue
+        }
+    }
+    It 'still imports schema 1 (<Name>)' -ForEach @(
+        @{ Name = 'ALL'; Ids = '"ALL"'; Expect = $null }
+        @{ Name = 'single id as string'; Ids = '"c1"'; Expect = 'c1' }
+        @{ Name = 'array'; Ids = '["c1","c2"]'; Expect = 'c2' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ ctx = $script:ctx; ids = $Ids; expect = $Expect } {
+            Set-Content (Get-TarStorePath $ctx 'Selection.json') "{`"SchemaVersion`":1,`"TenantId`":`"t1`",`"Teams`":[{`"Id`":`"A`",`"Name`":`"a`",`"ChannelIds`":$ids}]}"
+            $f = (Import-TarSelection -Context $ctx).ChannelFilter
+            if ($expect) { $f['A'].Contains($expect) | Should -BeTrue } else { $f.ContainsKey('A') | Should -BeFalse }
+        }
+    }
+    It 'refuses a newer schema' {
+        InModuleScope TeamsAccessReport -Parameters @{ ctx = $script:ctx } {
+            Set-Content (Get-TarStorePath $ctx 'Selection.json') '{"SchemaVersion":99,"TenantId":"t1","Teams":[]}'
+            { Import-TarSelection -Context $ctx } | Should -Throw -ExpectedMessage '*newer than this module*'
+        }
+    }
+}
+
+Describe 'CSV column contract' {
+    It 'writes a header-only file for an empty set and keeps it readable as zero rows' {
+        InModuleScope TeamsAccessReport -Parameters @{ p = (Join-Path $TestDrive 'hdr') } {
+            $c = New-TarContext -OutputPath $p; $null = New-Item -ItemType Directory -Path $p -Force
+            Set-TarRecord -Context $c -Name $script:TarFile.ExternalAssoc -InputObject @()
+            Get-TarCsvHeader -Path (Get-TarStorePath $c $script:TarFile.ExternalAssoc) | Should -Be $script:TarColumns[$script:TarFile.ExternalAssoc]
+            @(Read-TarRecord -Context $c -Name $script:TarFile.ExternalAssoc).Count | Should -Be 0
+            Write-TarRecord -Context $c -Name $script:TarFile.ExternalAssoc -InputObject @([pscustomobject]@{ UserId = 'u'; HostTenantId = 'h'; HostTeamId = 't'; HostTeamName = 'n' })
+            @(Read-TarRecord -Context $c -Name $script:TarFile.ExternalAssoc).Count | Should -Be 1
+        }
+    }
+    It 'refuses -Resume into a folder written with other columns' {
+        InModuleScope TeamsAccessReport -Parameters @{ p = (Join-Path $TestDrive 'old') } {
+            $c = New-TarContext -OutputPath $p; $null = New-Item -ItemType Directory -Path $c.StateDir -Force
+            Set-Content (Join-Path $p 'Selection.json') '{}'
+            Set-Content (Join-Path $p $script:TarFile.Drift) '"SiteUrl","Site","SiteKind","Finding","Severity","UserId"'
+            { Initialize-TarStore -Context $c -Resume } | Should -Throw -ExpectedMessage '*incompatible version*'
+        }
+    }
+}
