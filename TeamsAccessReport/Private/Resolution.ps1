@@ -85,7 +85,7 @@ function Invoke-TarPrincipalResolution {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context)
     $assignments = @(Read-TarRecord -Context $Context -Name $script:TarFile.SpAssignments)
-    if ($assignments.Count -eq 0) { return }
+    if ($assignments.Count -eq 0) { Set-TarRecord -Context $Context -Name $script:TarFile.EffectiveSpAccess -InputObject @(); return }
     Write-TarLog "Phase 3: resolving $($assignments.Count) SharePoint role assignments"
     $cache = New-TarResolverCache
     $groupIndex = @{}
@@ -115,7 +115,7 @@ function Invoke-TarPrincipalResolution {
         foreach ($p in @($principals)) {
             $effective.Add([pscustomobject]@{
                     SiteUrl = $a.SiteUrl; WebUrl = $a.WebUrl; Scope = $a.Scope; ObjectPath = $a.ObjectPath; ListTitle = $a.ListTitle; ItemId = $a.ItemId
-                    Roles = $a.Roles; LimitedAccessOnly = $a.LimitedAccessOnly; Kind = $p.Kind; UserId = $p.UserId; Upn = $p.Upn
+                    Roles = $a.Roles; LimitedAccessOnly = $a.LimitedAccessOnly; AssociatedGroup = $a.AssociatedGroup; Kind = $p.Kind; UserId = $p.UserId; Upn = $p.Upn
                     DisplayName = $p.DisplayName; UserType = $p.UserType; ExpansionPath = $p.Path
                 })
         }

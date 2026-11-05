@@ -1,5 +1,22 @@
 ﻿# Changelog
 
+## 2.0.4 – 2026-11-05
+### Added
+- `DriftReport.csv` has a new column `Cause`. `PublicTeamDefault` marks "Everyone except external users" in the
+  associated Members group of a public team site – a Microsoft default, not a misconfiguration. Severity stays High.
+- `SPAssignments.csv` and `EffectiveSharePointAccess.csv` have a new column `AssociatedGroup` (Owner/Member/Visitor),
+  read once per site from `_api/web?$expand=AssociatedOwnerGroup,AssociatedMemberGroup,AssociatedVisitorGroup`.
+  If that call fails the scan continues with a WARN and `Cause` stays empty for the site.
+
+### Changed
+- CSV files of phases that ran are always written, with only a header row when there are 0 rows (previously
+  `ExternalAssociations.csv`, `Errors.csv` and others were missing, which was indistinguishable from "not run").
+  Files of phases that did not run remain absent. Column order lives in `$script:TarColumns`.
+- `Selection.json` schema 2: `AllChannels` (bool) and `ChannelIds` (always an array; previously a single selected
+  channel was written as a string). Schema 1 files are still imported.
+- `-Resume` checks existing CSV headers and refuses folders written by an incompatible version with a clear message.
+  Runs from 2.0.3 with `-IncludeSharePoint` cannot be resumed with 2.0.4; start a new run.
+
 ## 2.0.3 – 2026-11-05
 ### Fixed
 - Graph returns HTTP 404 "Folder location for this channel is not ready yet" for channels whose files folder has

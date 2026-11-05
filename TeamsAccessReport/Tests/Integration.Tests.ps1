@@ -65,6 +65,19 @@ Describe 'Full run (app-only, SharePoint, external associations)' {
     It 'does not flag team members on the team site' {
         @($drift | Where-Object { $_.SiteKind -eq 'TeamSite' -and $_.Upn -in 'anna@contoso.se', 'bo@contoso.se' }).Count | Should -Be 0
     }
+    It 'attributes EEEU on the public team site to the Microsoft default, but not the direct grant on a private site' {
+        $it = @($drift | Where-Object { $_.Finding -eq 'BroadGrant' -and $_.SiteUrl -like '*/IT' })
+        $it.Count | Should -Be 1; $it[0].Cause | Should -Be 'PublicTeamDefault'; $it[0].Severity | Should -Be 'High'
+        $fin = @($drift | Where-Object { $_.Finding -eq 'BroadGrant' -and $_.SiteUrl -like '*/Finance' })
+        $fin.Count | Should -Be 1; $fin[0].Cause | Should -BeNullOrEmpty
+    }
+    It '<_> header matches the column contract' -ForEach @('Teams.csv', 'TeamsAccess.csv', 'Channels.csv', 'IncomingSharedChannels.csv', 'SPAssignments.csv', 'SPGroupMembers.csv', 'EffectiveSharePointAccess.csv', 'DriftReport.csv', 'ExternalAssociations.csv', 'Errors.csv') {
+        $name = $_
+        $expected = InModuleScope TeamsAccessReport -Parameters @{ n = $name } { $script:TarColumns[$n] }
+        $actual = InModuleScope TeamsAccessReport -Parameters @{ p = (Join-Path $out $name) } { Get-TarCsvHeader -Path $p }
+        $actual | Should -Be $expected
+    }
+    It 'writes Errors.csv header-only when there are no errors' { @(Import-Csv (Join-Path $out 'Errors.csv')).Count | Should -Be 0 }
     It 'finds external associations for internal users' { @(Import-Csv (Join-Path $out 'ExternalAssociations.csv')).Count | Should -Be 2 }
     It 'neutralizes formula injection in CSV' { Get-Content (Join-Path $out 'TeamsAccess.csv') -Raw | Should -Match ([regex]::Escape('"''=HYPERLINK')) }
     It 'writes a structured log (JSON Lines)' { Get-Content (Join-Path $out 'run.jsonl') | Select-Object -First 3 | ForEach-Object { { $_ | ConvertFrom-Json } | Should -Not -Throw } }
