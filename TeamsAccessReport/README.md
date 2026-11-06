@@ -104,7 +104,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 | File | Key | Content |
 |---|---|---|
 | `Teams.csv` | TeamId | Inventory + `Completeness` / `FailedStages` |
-| `TeamsAccess.csv` | TeamId, ChannelId, UserId | Membership, `AccessPath` (TeamMembership / DirectChannelMember / IndirectViaSharedTeam) |
+| `TeamsAccess.csv` | TeamId, ChannelId, UserId | Membership, `AccessPath` (TeamMembership / DirectChannelMember / IndirectViaHostTeam / IndirectViaSharedTeam) |
 | `Channels.csv` | ChannelId | Channel type, `SiteUrl` (input for phase 2) and `SiteSource` (FilesFolder / GroupDriveFallback) |
 | `IncomingSharedChannels.csv` | TeamId, ChannelId | Shared channels from other teams/tenants, `CrossTenant` |
 | `SPAssignments.csv` | SiteUrl, Scope, ObjectPath | Raw role assignments (SiteCollectionAdmin/Web/List/Item); `AssociatedGroup` = Owner/Member/Visitor for the site's default groups |

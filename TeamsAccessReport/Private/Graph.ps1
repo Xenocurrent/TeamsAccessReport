@@ -6,7 +6,9 @@ function Invoke-TarGraphRaw {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Uri)
     $statusCode = 0; $headers = $null
-    $body = Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputType Hashtable -SkipHttpErrorCheck `
+    # Prefer include-unknown-enum-members: without it Graph returns channel membershipType 'shared' as
+    # 'unknownFutureValue' (evolvable enum). Harmless for every other endpoint.
+    $body = Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputType Hashtable -SkipHttpErrorCheck -Headers @{ Prefer = 'include-unknown-enum-members' } `
         -StatusCodeVariable 'statusCode' -ResponseHeadersVariable 'headers' -ErrorAction Stop
     [pscustomobject]@{ StatusCode = [int]$statusCode; Body = $body; RetryAfterSeconds = (ConvertFrom-TarRetryAfterHeader -Headers $headers) }
 }

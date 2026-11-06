@@ -135,6 +135,7 @@ Describe 'ConvertTo-TarSpAssignmentRecord' {
         @{ Bindings = @([pscustomobject]@{ Name = 'Edit' }); Roles = 'Edit'; Limited = $false }
         @{ Bindings = [pscustomobject]@{ results = @([pscustomobject]@{ Name = 'Read' }, [pscustomobject]@{ Name = 'Limited Access' }) }; Roles = 'Read;Limited Access'; Limited = $false }
         @{ Bindings = @([pscustomobject]@{ Name = 'Limited Access' }); Roles = 'Limited Access'; Limited = $true }
+        @{ Bindings = @([pscustomobject]@{ Name = 'Web-Only Limited Access' }); Roles = 'Web-Only Limited Access'; Limited = $true }
     ) {
         InModuleScope TeamsAccessReport -Parameters @{ Bindings = $Bindings; Roles = $Roles; Limited = $Limited } {
             $ra = [pscustomobject]@{ Member = [pscustomobject]@{ Title = 'X'; LoginName = 'x'; Email = ''; PrincipalType = 1 }; RoleDefinitionBindings = $Bindings }
@@ -159,6 +160,7 @@ Describe 'Resolve-TarSpPrincipal' {
         @{ Login = 'SharingLinks.a.AnonymousView.b'; Title = 'SharingLinks.a.AnonymousView.b'; Kind = 'AnonymousLink'; Path = 'Direct' }
         @{ Login = 'SharingLinks.a.OrganizationEdit.b'; Title = 'SharingLinks.a.OrganizationEdit.b'; Kind = 'OrganizationLink'; Path = 'Direct' }
         @{ Login = 'SHAREPOINT\system'; Title = 'System'; Kind = 'SystemOrApp'; Path = 'Direct' }
+        @{ Login = 'c:0u.c|tenant|a.68e55f997a4b45f689726a76bf5248b0'; Title = 'SLinkClaim.1.2'; Kind = 'SharingLinkClaim'; Path = 'Direct' }
         @{ Login = 'weird|claim'; Title = 'W'; Kind = 'Unresolved'; Path = 'Direct' }
     ) {
         InModuleScope TeamsAccessReport -Parameters @{ Login = $Login; Title = $Title; Kind = $Kind; Path = $Path } {
@@ -838,6 +840,34 @@ Describe 'PnP controls in the start window (Windows Forms)' -Skip:(-not $IsWindo
             try { $g.Create.Enabled | Should -BeFalse; $g.Text.Text | Should -Match 'NOT installed' } finally { $g.Form.Dispose() }
             $g = New-TarPnPGuideForm -Tenant 't' -PnPInstalled $true
             try { $g.Create.Enabled | Should -BeTrue } finally { $g.Form.Dispose() }
+        }
+    }
+}
+
+Describe 'Get-TarChannelAccessPath' {
+    It '<Type> channel, source <Src> -> <Path>' -ForEach @(
+        @{ Type = 'private'; Src = 'HOST'; Path = 'DirectChannelMember' }
+        @{ Type = 'private'; Src = ''; Path = 'DirectChannelMember' }
+        @{ Type = 'shared'; Src = ''; Path = 'DirectChannelMember' }
+        @{ Type = 'shared'; Src = 'HOST'; Path = 'IndirectViaHostTeam' }
+        @{ Type = 'shared'; Src = 'OTHER'; Path = 'IndirectViaSharedTeam' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ t = $Type; s = $Src } { Get-TarChannelAccessPath -ChannelType $t -SourceTeamId $s -HostTeamId 'HOST' } | Should -Be $Path
+    }
+}
+
+Describe 'Graph enum handling' {
+    It 'asks Graph for evolvable enum members (shared channels are otherwise unknownFutureValue)' {
+        InModuleScope TeamsAccessReport {
+            Mock Invoke-MgGraphRequest { @{ value = @() } }
+            $null = Invoke-TarGraphRaw -Uri 'https://graph.microsoft.com/v1.0/teams/x/channels'
+            Should -Invoke Invoke-MgGraphRequest -Times 1 -Exactly -ParameterFilter { $Headers['Prefer'] -eq 'include-unknown-enum-members' }
+        }
+    }
+    It 'treats an unknown channel type as a channel site, not as the team site' {
+        InModuleScope TeamsAccessReport {
+            $m = Get-TarSiteMap -Channels @([pscustomobject]@{ TeamId = 't'; TeamName = 'T'; ChannelId = 'c'; ChannelName = 'Delad'; ChannelType = 'unknownFutureValue'; SiteUrl = 'https://x/teams/T-Delad' })
+            $m['https://x/teams/T-Delad'].Kind | Should -Be 'ChannelSite'
         }
     }
 }

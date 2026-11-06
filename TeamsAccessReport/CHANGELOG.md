@@ -1,5 +1,19 @@
 ﻿# Changelog
 
+## 2.4.1 – 2026-11-06
+Found in the TAR-Test run against a real tenant.
+### Fixed
+- Shared channels were reported as `unknownFutureValue`: Graph only returns `shared` with the request header
+  `Prefer: include-unknown-enum-members`, which is now sent on every Graph call. As a consequence the shared channel's
+  site was treated as a team site (false `InTeamsNotInSharePoint`) and its members were not read. Any channel type
+  other than `standard` is now handled as a channel with its own site and member list, with a WARN for unknown types.
+- A private channel member was labelled `IndirectViaSharedTeam` because Graph sets `originalSourceMembershipUrl` to
+  the host team. Private channel members are now always `DirectChannelMember`; shared channels distinguish
+  `IndirectViaHostTeam` (new) from `IndirectViaSharedTeam`.
+- The token principal of a sharing link (`c:0u.c|tenant|…`, title `SLinkClaim.*`) was reported twice as
+  `UnresolvedPrincipal`. It is now `SharingLinkClaim` and not a separate finding (the link itself is reported).
+- `Web-Only Limited Access` is treated as limited access like `Limited Access`.
+
 ## 2.4.0 – 2026-11-05
 ### Added
 - Guided PnP app setup for delegated SharePoint scanning. The start window has a **Create...** button next to the PnP

@@ -65,8 +65,9 @@ $script:TarCause = @{
 
 $script:TarRetryableStatus = @(429, 500, 502, 503, 504)
 # SharePoint returns role names in the site's language. These are data values, not UI text:
-# 'Limited Access' (English) and its Swedish localization. Add the name for every site language you scan.
-$script:TarLimitedAccessRoles = @('Limited Access', 'Begränsad åtkomst')
+# 'Limited Access' / 'Web-Only Limited Access' (English) and the Swedish 'Limited Access'. Add the names for every
+# site language you scan (the Swedish name of 'Web-Only Limited Access' is not verified, so it is not listed).
+$script:TarLimitedAccessRoles = @('Limited Access', 'Web-Only Limited Access', 'Begränsad åtkomst')
 
 # How phase 2 runs. 'Process' in production (Graph/PnP assembly conflict). Tests set 'InProcess'.
 $script:TarSharePointExecutionMode = 'Process'
