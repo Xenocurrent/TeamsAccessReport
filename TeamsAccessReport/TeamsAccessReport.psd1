@@ -1,6 +1,6 @@
 ﻿@{
     RootModule           = 'TeamsAccessReport.psm1'
-    ModuleVersion        = '2.4.2'
+    ModuleVersion        = '2.5.0'
     GUID                 = '6f0c8a51-3d7e-4b9a-9a1e-2c4f7d5b8e10'
     Author               = '<AUTHOR>'
     CompanyName          = '<COMPANY>'
@@ -9,7 +9,7 @@
     CompatiblePSEditions = @('Core')
     # Microsoft.Graph.Authentication is imported at run time (not RequiredModules) so that the worker process
     # never loads Graph assemblies together with PnP.
-    FunctionsToExport    = @('Invoke-TeamsAccessReport', 'New-TeamsAccessReportProfile', 'Get-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile', 'New-TeamsAccessReportPnPApp')
+    FunctionsToExport    = @('Invoke-TeamsAccessReport', 'New-TeamsAccessReportProfile', 'Get-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile', 'New-TeamsAccessReportPnPApp', 'New-TeamsAccessReportApp')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()

@@ -93,11 +93,10 @@ function New-TarStartForm {
     $modes.Controls.AddRange(@($ui.AppOnly, $ui.Delegated))
     Add-TarFormRow $tc 'Sign-in' $modes
     $ui.ClientId = [System.Windows.Forms.TextBox]@{ Width = $textWidth }
-    Add-TarFormRow $tc 'App (client) ID' $ui.ClientId
-    $ui.Certificate = [System.Windows.Forms.ComboBox]@{ DropDownStyle = 'DropDown'; Width = $textWidth }
-    # Short display text (no 'CN=' prefix) and a wider drop-down so the store is never cut off.
-    foreach ($c in $ui.CertRows) { $null = $ui.Certificate.Items.Add("$($c.Subject -replace '^CN=', '')  (expires $($c.Expires), $($c.Store))") }
-    $ui.Certificate.DropDownWidth = [Math]::Max($textWidth, 560)
+    $ui.AppCreate = [System.Windows.Forms.Button]@{ Text = 'Create app...'; AutoSize = $true }
+    Add-TarFormRow $tc 'App (client) ID' $ui.ClientId $ui.AppCreate
+    $ui.Certificate = [System.Windows.Forms.ComboBox]@{ DropDownStyle = 'DropDown'; Width = $textWidth; DropDownWidth = [Math]::Max($textWidth, 560) }
+    Set-TarStartFormCertificate -Ui $ui -Rows $ui.CertRows
     Add-TarFormRow $tc 'Certificate' $ui.Certificate
     $ui.PnPClientId = [System.Windows.Forms.TextBox]@{ Width = $textWidth }
     $ui.PnPCreate = [System.Windows.Forms.Button]@{ Text = 'Create...'; AutoSize = $true }
@@ -141,6 +140,7 @@ function New-TarStartForm {
     $ui.AppOnly.Add_CheckedChanged({ Update-TarStartFormState -Ui (Get-TarFormUi $this) })
     $ui.Save.Add_CheckedChanged({ Update-TarStartFormState -Ui (Get-TarFormUi $this) })
     $ui.TenantCheck.Add_Click({ Invoke-TarStartFormCheck -Ui (Get-TarFormUi $this) })
+    $ui.AppCreate.Add_Click({ $u = Get-TarFormUi $this; try { Invoke-TarStartFormAppCreate -Ui $u } catch { $u.Error.Text = $_.Exception.Message } })
     $ui.PnPCreate.Add_Click({ $u = Get-TarFormUi $this; try { Invoke-TarStartFormPnPCreate -Ui $u } catch { $u.Error.Text = $_.Exception.Message } })
     $ui.SharePoint.Add_CheckedChanged({ Update-TarStartFormState -Ui (Get-TarFormUi $this) })
     $ui.Browse.Add_Click({
@@ -208,6 +208,7 @@ function Update-TarStartFormState {
     param([Parameter(Mandatory)][hashtable]$Ui)
     $app = $Ui.AppOnly.Checked
     $Ui.ClientId.Enabled = $app
+    $Ui.AppCreate.Enabled = $app
     $Ui.Certificate.Enabled = $app
     $Ui.Associations.Enabled = $app
     if (-not $app) { $Ui.Associations.Checked = $false }
@@ -475,6 +476,76 @@ function Invoke-TarStartFormPnPCreate {
         $Ui.Error.Text = ''
     } catch {
         Update-TarStartFormState -Ui $Ui
+        $Ui.Error.Text = $_.Exception.Message
+    } finally { $Ui.Form.Enabled = $true; $Ui.Form.UseWaitCursor = $false; $Ui.Form.Activate() }
+}
+
+# --- Report app setup from the start window -----------------------------------------------------------------
+
+function Set-TarStartFormCertificate {
+    # (Re)fills the certificate drop-down; short text (no 'CN=') so the store is never cut off.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Sets in-memory UI state only.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Ui, [AllowEmptyCollection()][object[]]$Rows = @(), [string]$Select)
+    $Ui.CertRows = @($Rows)
+    $Ui.Certificate.Items.Clear()
+    foreach ($c in $Ui.CertRows) { $null = $Ui.Certificate.Items.Add("$($c.Subject -replace '^CN=', '')  (expires $($c.Expires), $($c.Store))") }
+    if ($Select) {
+        $i = @(if ($Ui.CertRows.Count) { 0..($Ui.CertRows.Count - 1) | Where-Object { $Ui.CertRows[$_].Id -eq $Select } })
+        if ($i.Count) { $Ui.Certificate.SelectedIndex = $i[0] }
+    }
+}
+
+function Get-TarAppSetupPrompt {
+    # Pure: confirmation text for 'Create app...'.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Tenant)
+    $lines = @(
+        "Set up the report app in $($Tenant)?", ''
+        'A PowerShell window and a browser sign-in open. Sign in as an admin of that tenant. Then:'
+        "  1. a certificate is created in CurrentUser\My (private key not exportable),"
+        "  2. the app 'TeamsAccessReport' is registered with the read permissions the report needs,"
+        '  3. admin consent is granted,'
+        '  4. the app ID and certificate are filled in here.', ''
+        'Required role: Privileged Role Administrator + Application Administrator, or Global Administrator.'
+    )
+    $lines -join [Environment]::NewLine
+}
+
+function Invoke-TarStartFormAppCreate {
+    # 'Create app...' button: confirm -> New-TeamsAccessReportApp in a separate window -> fill the fields.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Ui)
+    if (-not $Ui.Tenant.Text.Trim()) { $Ui.Error.Text = 'Enter the tenant first.'; return }
+    $tenant = (Resolve-TarTenant -Tenant $Ui.Tenant.Text).Query
+    if (-not (Show-TarMessageBox -Text (Get-TarAppSetupPrompt -Tenant $tenant))) { return }
+    $Ui.Form.UseWaitCursor = $true; $Ui.Form.Enabled = $false
+    $Ui.Error.Text = ''
+    $Ui.TenantStatus.ForeColor = [System.Drawing.SystemColors]::ControlText
+    $Ui.TenantStatus.Text = 'Setting up the app... finish the sign-in in the browser / PowerShell window.'
+    try {
+        $r = New-TarAppViaWorker -Tenant $tenant -WaitCallback { [System.Windows.Forms.Application]::DoEvents() } -Confirm:$false
+        $Ui.Profile.SelectedIndex = 0
+        $Ui.Tenant.Text = $tenant
+        $Ui.AppOnly.Checked = $true
+        $Ui.ClientId.Text = [string]$r.ClientId
+        Set-TarStartFormCertificate -Ui $Ui -Rows @(Get-TarCertificateCandidate | Where-Object { $_.HasPrivateKey -and $_.Valid }) -Select ([string]$r.CertificateThumbprint)
+        if (-not $Ui.ProfileName.Text) { $Ui.ProfileName.Text = ($tenant -split '\.')[0] }
+        $Ui.Save.Checked = $true
+        Update-TarStartFormState -Ui $Ui
+        if ($r.Status -eq 'Ready') {
+            $Ui.TenantStatus.ForeColor = [System.Drawing.Color]::DarkGreen
+            $Ui.TenantStatus.Text = "App ready ($($r.ClientId)). Permissions can take a few minutes to apply before Start works."
+        } else {
+            $Ui.TenantStatus.ForeColor = [System.Drawing.Color]::Firebrick
+            $Ui.TenantStatus.Text = 'App created, but admin consent is incomplete.'
+            $Ui.Error.Text = "Consent: $($r.Error)"
+            if (Show-TarMessageBox -Text "Admin consent is incomplete. Open the consent page now?$([Environment]::NewLine)$($r.ConsentUrl)") { Start-Process $r.ConsentUrl }
+        }
+    } catch {
+        $Ui.TenantStatus.ForeColor = [System.Drawing.Color]::Firebrick
+        $Ui.TenantStatus.Text = 'App setup failed.'
         $Ui.Error.Text = $_.Exception.Message
     } finally { $Ui.Form.Enabled = $true; $Ui.Form.UseWaitCursor = $false; $Ui.Form.Activate() }
 }
