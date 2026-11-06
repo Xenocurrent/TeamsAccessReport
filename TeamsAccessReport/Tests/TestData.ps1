@@ -28,7 +28,7 @@ $script:GraphRoutes = @(
     @{ P = '/teams\?\$skiptoken=p2'; R = { New-GraphOk @{ value = @(@{ id = $script:G2; displayName = 'IT'; description = $null; visibility = 'public' }) } } }
     @{ P = '/teams/([0-9a-f-]{36})\?'; R = { param($m) $n = if ($m.Groups[1].Value -eq $script:G1) { 'Finance' } else { 'IT' }; $v = if ($m.Groups[1].Value -eq $script:G2) { 'public' } else { 'private' }; New-GraphOk @{ id = $m.Groups[1].Value; displayName = $n; visibility = $v; isArchived = ($m.Groups[1].Value -eq $script:G2); webUrl = "https://teams/$n"; createdDateTime = '2025-01-01T00:00:00Z' } } }
     @{ P = "/teams/$script:G1/members$"; R = { New-GraphOk @{ value = @((New-Member 'u1' 'Anna' 'anna@contoso.se' @('owner')), (New-Member 'u3' 'Bo' 'bo@contoso.se')) } } }
-    @{ P = "/teams/$script:G2/members$"; R = { New-GraphOk @{ value = @((New-Member 'u1' 'Anna' 'anna@contoso.se' @('owner'))) } } }
+    @{ P = "/teams/$script:G2/members$"; R = { New-GraphOk @{ value = @((New-Member 'u1' 'Anna' 'anna@contoso.se' @('owner') $script:Tenant "https://graph.microsoft.com/beta/tenants/$script:Tenant/teams/$script:G1/channels/C2/members/m1")) } } }
     @{ P = "/teams/$script:G1/incomingChannels"; R = { New-GraphOk @{ value = @(@{ id = 'X1'; displayName = 'Fabrikam Partner'; membershipType = 'shared'; tenantId = $script:ExtTenant }) } } }
     @{ P = '/incomingChannels'; R = { New-GraphOk @{ value = @() } } }
     @{ P = "/teams/$script:G1/channels\?"; R = { New-GraphOk @{ value = @(@{ id = 'C1'; displayName = 'General'; membershipType = 'standard' }, @{ id = 'C2'; displayName = 'Payroll'; membershipType = 'private' }, @{ id = 'C3'; displayName = 'Partner'; membershipType = 'shared' }) } } }

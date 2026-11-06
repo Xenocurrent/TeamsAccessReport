@@ -75,6 +75,8 @@ function Resolve-TarSpPrincipal {
         }
         'spo-grid-all-users' { New-TarPrincipal -Kind BroadGrant -UserId '*' -Upn 'EveryoneExceptExternalUsers' -DisplayName $Title -Path $PathPrefix; return }
         '^c:0\(\.s\|true$' { New-TarPrincipal -Kind BroadGrant -UserId '*' -Upn 'Everyone' -DisplayName $Title -Path $PathPrefix; return }
+        # Token principal of a sharing link ('SLinkClaim.*'); the access itself is reported via its SharingLinks group.
+        '^c:0u\.c\|tenant\|' { New-TarPrincipal -Kind SharingLinkClaim -Upn $Login -DisplayName $Title -Path $PathPrefix; return }
         '^SHAREPOINT\\system$|^i:0i\.t\|ms\.sp\.ext\|' { New-TarPrincipal -Kind SystemOrApp -Upn $Login -DisplayName $Title -Path $PathPrefix; return }
     }
     $kind = if ($Title -match '^SharingLinks\.[^.]+\.Anonymous\w*\.') { 'AnonymousLink' } elseif ($Title -match '^SharingLinks\.[^.]+\.Organization\w*\.') { 'OrganizationLink' } else { 'Unresolved' }

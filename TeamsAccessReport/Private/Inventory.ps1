@@ -1,5 +1,19 @@
 ﻿# Phase 1 - Teams inventory via Graph. Checkpoint per team; rows are written only when the team is complete.
 
+function Get-TarChannelAccessPath {
+    # Pure: how a channel member got access. Graph sets originalSourceMembershipUrl on allMembers rows; for private
+    # channels it can point at the host team itself (seen in a real tenant), which is NOT indirect access.
+    #   private                       -> DirectChannelMember
+    #   shared, no source             -> DirectChannelMember
+    #   shared, source = host team    -> IndirectViaHostTeam   (channel shared with its own team)
+    #   shared, source = other team   -> IndirectViaSharedTeam
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$ChannelType, [string]$SourceTeamId, [Parameter(Mandatory)][string]$HostTeamId)
+    if ($ChannelType -eq 'private' -or -not $SourceTeamId) { return 'DirectChannelMember' }
+    if ($SourceTeamId -eq $HostTeamId) { 'IndirectViaHostTeam' } else { 'IndirectViaSharedTeam' }
+}
+
 function ConvertTo-TarAccessRecord {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Member, [Parameter(Mandatory)]$Team, $Channel,
@@ -103,22 +117,28 @@ function Invoke-TarTeamInventory {
             Write-TarLog "    Channel filter applied: $($channels.Count) channels"
         }
 
+        foreach ($u in @($channels | Where-Object { $_.membershipType -notin 'standard', 'private', 'shared' })) {
+            Write-TarLog "    Channel '$($u.displayName)' has membershipType '$($u.membershipType)'; treated as a channel with its own site and member list." -Level WARN
+
+        }
+
         foreach ($ch in $channels) {
             $site = [pscustomobject]@{ SiteUrl = $null; FilesFolderUrl = $null; DriveId = $null; FolderItemId = $null; SiteSource = $null }
             try { $site = Get-TarChannelSite -Context $Context -TeamId $team.id -ChannelId $ch.id -ChannelName $ch.displayName -MembershipType $ch.membershipType }
             catch { & $fail "FilesFolder:$($ch.displayName)" $ch.id $_ }
             $channelRecords.Add([pscustomobject]@{ TeamId = $team.id; TeamName = $team.displayName; ChannelId = $ch.id; ChannelName = $ch.displayName
                     ChannelType = $ch.membershipType; SiteUrl = $site.SiteUrl; FilesFolderUrl = $site.FilesFolderUrl; DriveId = $site.DriveId
-                    FolderItemId = $site.FolderItemId; SiteSource = $site.SiteSource; OwnSharePointSite = ($ch.membershipType -in 'private', 'shared')
+                    FolderItemId = $site.FolderItemId; SiteSource = $site.SiteSource; OwnSharePointSite = ($ch.membershipType -ne 'standard')
                 })
 
-            if ($ch.membershipType -in 'private', 'shared') {
+            # Anything but 'standard' has its own site and member list (defensive for future enum values).
+            if ($ch.membershipType -ne 'standard') {
                 try {
                     $members = @(Get-TarGraphCollection -Context $Context -Uri "$base/teams/$($team.id)/channels/$($ch.id)/allMembers")
                     foreach ($cm in $members) {
                         $src = Get-TarProperty $cm '@microsoft.graph.originalSourceMembershipUrl'
                         $srcTeam = if ($src -and $src -match '/teams/([^/]+)') { $Matches[1] } else { $null }
-                        $path = if ($src) { 'IndirectViaSharedTeam' } else { 'DirectChannelMember' }
+                        $path = Get-TarChannelAccessPath -ChannelType $ch.membershipType -SourceTeamId $srcTeam -HostTeamId $team.id
                         $access.Add((ConvertTo-TarAccessRecord -Member $cm -Team $team -Channel $ch -Scope 'Channel' -AccessPath $path -SourceTeamId $srcTeam))
                     }
                     Write-TarLog "    Channel '$($ch.displayName)' [$($ch.membershipType)]: $($members.Count) membership rows"

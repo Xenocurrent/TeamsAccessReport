@@ -45,6 +45,10 @@ Describe 'Full run (app-only, SharePoint, external associations)' {
         $c4.SiteSource | Should -Be 'GroupDriveFallback'
         $c4.SiteUrl | Should -Be 'https://contoso.sharepoint.com/sites/IT'
     }
+    It 'labels a private channel member whose source is the host team as direct (real-tenant case)' {
+        $payroll = @(Import-Csv (Join-Path $out 'TeamsAccess.csv') | Where-Object { $_.ChannelId -eq 'C2' })
+        $payroll.Count | Should -Be 1; $payroll[0].AccessPath | Should -Be 'DirectChannelMember'
+    }
     It 'counts channel types, archived teams, indirect and external rows' {
         $summary.Channels | Should -Be 4; $summary.PrivateChannels | Should -Be 1; $summary.SharedChannels | Should -Be 1
         $summary.ArchivedTeams | Should -Be 1; $summary.IndirectRows | Should -Be 1; $summary.ExternalTenantRows | Should -Be 1
