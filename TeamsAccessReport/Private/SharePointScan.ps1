@@ -166,6 +166,27 @@ function Invoke-TarSpSiteScan {
     [pscustomobject]@{ Assignments = $records; GroupMembers = $memberships; GroupCount = $groups.Count }
 }
 
+function Connect-TarSpSite {
+    # App-only: certificate connection per site (silent). Delegated: the first site signs in interactively, later
+    # sites reuse that connection via -Connection (PnP.PowerShell >= 2.1.0), so the browser opens once per run.
+    # If reuse fails (e.g. older PnP), falls back to a fresh interactive sign-in for that site.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)][string]$ClientId, [string]$Thumbprint,
+        [string]$Tenant, $SharedConnection)
+    if ($Thumbprint) {
+        return Connect-PnPOnline -Url $SiteUrl -ClientId $ClientId -Thumbprint $Thumbprint -Tenant $Tenant -ReturnConnection -ErrorAction Stop
+    }
+    if ($SharedConnection) {
+        try {
+            # -Connection overrides -ClientId with the passed connection's client ID (PnP 3.0.0+).
+            return Connect-PnPOnline -Url $SiteUrl -Interactive -Connection $SharedConnection -ReturnConnection -ErrorAction Stop
+        } catch {
+            Write-TarLog "    Reusing the sign-in failed ($($_.Exception.Message)); signing in again for this site." -Level WARN
+        }
+    }
+    Connect-PnPOnline -Url $SiteUrl -Interactive -ClientId $ClientId -ReturnConnection -ErrorAction Stop
+}
+
 function Invoke-TarSharePointScan {
     # Worker entry point. Assumes PnP.PowerShell is loaded (or stubbed in tests).
     [CmdletBinding()]
@@ -174,14 +195,17 @@ function Invoke-TarSharePointScan {
     $done = Get-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.SharePoint
     Write-TarLog "SharePoint scan: $($Sites.Count) sites, already done: $($done.Count)"
     $n = 0
+    $shared = $null   # delegated: the first signed-in connection, reused for every following site (one sign-in)
     foreach ($site in $Sites) {
         $n++
         if ($done.Contains($site)) { Write-TarLog "[$n] Skipping (done): $site"; continue }
         Write-TarLog "[$n/$($Sites.Count)] Site $site"
         try {
-            $connArgs = @{ Url = $site; ClientId = $ClientId; ReturnConnection = $true; ErrorAction = 'Stop' }
-            if ($Thumbprint) { $connArgs.Thumbprint = $Thumbprint; $connArgs.Tenant = $Tenant }
-            $conn = Connect-PnPOnline @connArgs
+            $conn = Connect-TarSpSite -SiteUrl $site -ClientId $ClientId -Thumbprint $Thumbprint -Tenant $Tenant -SharedConnection $shared
+            if (-not $Thumbprint -and -not $shared) {
+                $shared = $conn
+                Write-TarLog '    Signed in once; the sign-in is reused for the remaining sites.'
+            }
             $result = Invoke-TarSpSiteScan -Context $Context -SiteUrl $site -Connection $conn
             Write-TarRecord -Context $Context -Name $script:TarFile.SpAssignments -InputObject $result.Assignments
             Write-TarRecord -Context $Context -Name $script:TarFile.SpGroupMembers -InputObject $result.GroupMembers

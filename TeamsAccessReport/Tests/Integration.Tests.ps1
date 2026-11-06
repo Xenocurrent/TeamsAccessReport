@@ -5,7 +5,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..' 'TeamsAccessReport.psd1') -Force
     . (Join-Path $PSScriptRoot 'TestData.ps1')
     if (-not (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue)) {
-        function global:Connect-PnPOnline { param($Url, $ClientId, $Thumbprint, $Tenant, [switch]$ReturnConnection) }
+        function global:Connect-PnPOnline { param($Url, $ClientId, $Thumbprint, $Tenant, $Connection, [switch]$Interactive, [switch]$ReturnConnection) }
     }
     InModuleScope TeamsAccessReport { $script:TarSharePointExecutionMode = 'InProcess' }
 

@@ -1060,3 +1060,64 @@ Describe 'Create app button (Windows Forms)' -Skip:(-not $IsWindows) {
         }
     }
 }
+
+Describe 'SharePoint sign-in reuse (one delegated sign-in per run)' {
+    BeforeAll {
+        if (-not (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue)) {
+            function global:Connect-PnPOnline { param($Url, $ClientId, $Thumbprint, $Tenant, $Connection, [switch]$Interactive, [switch]$ReturnConnection) }
+        }
+    }
+    BeforeEach {
+        $global:TarPnPCalls = [System.Collections.Generic.List[object]]::new()
+        $global:TarPnPFailReuse = $false
+    }
+    AfterAll { Remove-Variable TarPnPCalls, TarPnPFailReuse -Scope Global -ErrorAction SilentlyContinue }
+
+    It 'delegated: signs in on the first site only and reuses that connection for the rest' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }; Mock Write-TarRecord { }; Mock Add-TarCheckpoint { }; Mock Add-TarErrorRecord { }
+            Mock Get-TarCheckpoint { , [System.Collections.Generic.HashSet[string]]::new() }
+            Mock Invoke-TarSpSiteScan { [pscustomobject]@{ Assignments = @(); GroupMembers = @(); GroupCount = 0 } }
+            Mock Connect-PnPOnline { $global:TarPnPCalls.Add([pscustomobject]@{ Url = $Url; ClientId = $ClientId; Connection = $Connection; Interactive = [bool]$Interactive; Thumbprint = $Thumbprint }); [pscustomobject]@{ Id = "conn-$Url" } }
+            Invoke-TarSharePointScan -Context ([pscustomobject]@{}) -Sites 'https://t.sharepoint.com/teams/a', 'https://t.sharepoint.com/teams/b', 'https://t.sharepoint.com/teams/c' -ClientId 'pnp-id'
+            $c = $global:TarPnPCalls
+            $c.Count | Should -Be 3
+            $c[0].ClientId | Should -Be 'pnp-id'; $c[0].Connection | Should -BeNullOrEmpty; $c[0].Interactive | Should -BeTrue
+            foreach ($i in 1, 2) { $c[$i].Connection.Id | Should -Be 'conn-https://t.sharepoint.com/teams/a'; $c[$i].ClientId | Should -BeNullOrEmpty; $c[$i].Interactive | Should -BeTrue }
+            Should -Invoke Add-TarErrorRecord -Times 0 -Exactly
+        }
+    }
+    It 'delegated: a failed first site does not become the shared connection' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }; Mock Write-TarRecord { }; Mock Add-TarCheckpoint { }; Mock Add-TarErrorRecord { }
+            Mock Get-TarCheckpoint { , [System.Collections.Generic.HashSet[string]]::new() }
+            Mock Invoke-TarSpSiteScan { [pscustomobject]@{ Assignments = @(); GroupMembers = @(); GroupCount = 0 } }
+            Mock Connect-PnPOnline { $global:TarPnPCalls.Add([pscustomobject]@{ Url = $Url; Connection = $Connection }); if ($Url -like '*/a') { throw 'Simulated (403) Forbidden' }; [pscustomobject]@{ Id = "conn-$Url" } }
+            Invoke-TarSharePointScan -Context ([pscustomobject]@{}) -Sites 'https://t.sharepoint.com/teams/a', 'https://t.sharepoint.com/teams/b', 'https://t.sharepoint.com/teams/c' -ClientId 'pnp-id'
+            $c = $global:TarPnPCalls
+            $c[1].Connection | Should -BeNullOrEmpty
+            $c[2].Connection.Id | Should -Be 'conn-https://t.sharepoint.com/teams/b'
+            Should -Invoke Add-TarErrorRecord -Times 1 -Exactly
+        }
+    }
+    It 'delegated: falls back to a fresh sign-in when reusing the connection fails' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }
+            Mock Connect-PnPOnline { $global:TarPnPCalls.Add([pscustomobject]@{ Url = $Url; ClientId = $ClientId; Connection = $Connection }); if ($Connection) { throw 'A parameter cannot be found that matches parameter name Connection.' }; [pscustomobject]@{ Id = 'fresh' } }
+            (Connect-TarSpSite -SiteUrl 'https://t.sharepoint.com/teams/b' -ClientId 'pnp-id' -SharedConnection ([pscustomobject]@{ Id = 'old' })).Id | Should -Be 'fresh'
+            $global:TarPnPCalls.Count | Should -Be 2
+            $global:TarPnPCalls[1].ClientId | Should -Be 'pnp-id'
+            Should -Invoke Write-TarLog -ParameterFilter { $Level -eq 'WARN' } -Times 1 -Exactly
+        }
+    }
+    It 'app-only: certificate connection per site, never interactive, never reused' {
+        InModuleScope TeamsAccessReport {
+            Mock Write-TarLog { }; Mock Write-TarRecord { }; Mock Add-TarCheckpoint { }; Mock Add-TarErrorRecord { }
+            Mock Get-TarCheckpoint { , [System.Collections.Generic.HashSet[string]]::new() }
+            Mock Invoke-TarSpSiteScan { [pscustomobject]@{ Assignments = @(); GroupMembers = @(); GroupCount = 0 } }
+            Mock Connect-PnPOnline { $global:TarPnPCalls.Add([pscustomobject]@{ Url = $Url; Connection = $Connection; Interactive = [bool]$Interactive; Thumbprint = $Thumbprint }); [pscustomobject]@{ Id = "conn-$Url" } }
+            Invoke-TarSharePointScan -Context ([pscustomobject]@{}) -Sites 'https://t.sharepoint.com/teams/a', 'https://t.sharepoint.com/teams/b' -ClientId 'app-id' -Thumbprint ('AB' * 20) -Tenant 't.onmicrosoft.com'
+            foreach ($x in $global:TarPnPCalls) { $x.Thumbprint | Should -Be ('AB' * 20); $x.Connection | Should -BeNullOrEmpty; $x.Interactive | Should -BeFalse }
+        }
+    }
+}
