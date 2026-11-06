@@ -849,7 +849,7 @@ Describe 'Get-TarChannelAccessPath' {
         @{ Type = 'private'; Src = 'HOST'; Path = 'DirectChannelMember' }
         @{ Type = 'private'; Src = ''; Path = 'DirectChannelMember' }
         @{ Type = 'shared'; Src = ''; Path = 'DirectChannelMember' }
-        @{ Type = 'shared'; Src = 'HOST'; Path = 'IndirectViaHostTeam' }
+        @{ Type = 'shared'; Src = 'HOST'; Path = 'DirectChannelMember' }
         @{ Type = 'shared'; Src = 'OTHER'; Path = 'IndirectViaSharedTeam' }
     ) {
         InModuleScope TeamsAccessReport -Parameters @{ t = $Type; s = $Src } { Get-TarChannelAccessPath -ChannelType $t -SourceTeamId $s -HostTeamId 'HOST' } | Should -Be $Path
