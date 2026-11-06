@@ -1,5 +1,11 @@
 ﻿# Changelog
 
+## 2.5.1 – 2026-11-06
+### Fixed
+- Delegated SharePoint scan opened a browser sign-in for every site. The first site now signs in interactively and the
+  following sites reuse that connection (`Connect-PnPOnline -Connection`, PnP.PowerShell 2.1.0+), so one sign-in per
+  run. If reusing fails, that site falls back to a fresh sign-in with a WARN log line. App-only is unchanged.
+
 ## 2.5.0 – 2026-11-06
 ### Added
 - `New-TeamsAccessReportApp`: sets up a tenant in one step - non-exportable certificate in CurrentUser\My, single-tenant
