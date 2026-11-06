@@ -1,5 +1,12 @@
 ﻿# Changelog
 
+## 2.4.2 – 2026-11-06
+### Fixed
+- The owner of a shared channel was labelled `IndirectViaHostTeam` (added in 2.4.1). In the real tenant Graph sets
+  `originalSourceMembershipUrl` to the host team for direct owners of both private and shared channels, so a host-team
+  source is now `DirectChannelMember`. `IndirectViaHostTeam` is removed; only a source in another team is
+  `IndirectViaSharedTeam`.
+
 ## 2.4.1 – 2026-11-06
 Found in the TAR-Test run against a real tenant.
 ### Fixed

@@ -129,7 +129,7 @@ function Export-TarSummary {
         Teams = $teams.Count; TeamsPartial = $partial; ArchivedTeams = @($teams | Where-Object IsArchived -eq 'True').Count
         Channels = $channels.Count; PrivateChannels = @($channels | Where-Object ChannelType -eq 'private').Count; SharedChannels = @($channels | Where-Object ChannelType -eq 'shared').Count
         IncomingCrossTenantChannels = @($incoming | Where-Object CrossTenant -eq 'True').Count
-        AccessRows = $access.Count; IndirectRows = @($access | Where-Object AccessPath -like 'IndirectVia*').Count
+        AccessRows = $access.Count; IndirectRows = @($access | Where-Object AccessPath -eq 'IndirectViaSharedTeam').Count
         GuestRows = @($access | Where-Object Role -eq 'Guest').Count; ExternalTenantRows = @($access | Where-Object { $_.UserTenantId -and $_.UserTenantId -ne $Context.TenantId }).Count
         SharePointIncluded = [bool]$SharePointIncluded; DriftFindings = $drift.Count; DriftHigh = @($drift | Where-Object Severity -eq 'High').Count
         Errors = $errors.Count; ResultStatus = if ($errors.Count -eq 0 -and $partial -eq 0) { 'Complete' } else { 'Incomplete' }

@@ -1,17 +1,17 @@
 ﻿# Phase 1 - Teams inventory via Graph. Checkpoint per team; rows are written only when the team is complete.
 
 function Get-TarChannelAccessPath {
-    # Pure: how a channel member got access. Graph sets originalSourceMembershipUrl on allMembers rows; for private
-    # channels it can point at the host team itself (seen in a real tenant), which is NOT indirect access.
+    # Pure: how a channel member got access. Graph sets originalSourceMembershipUrl on allMembers rows, and in a real
+    # tenant it pointed at the host team for DIRECT owners of both a private and a shared channel. A host-team source
+    # therefore says nothing about indirect access; only a source in ANOTHER team (the channel shared with that team) does.
     #   private                       -> DirectChannelMember
-    #   shared, no source             -> DirectChannelMember
-    #   shared, source = host team    -> IndirectViaHostTeam   (channel shared with its own team)
+    #   shared, no source / host team -> DirectChannelMember
     #   shared, source = other team   -> IndirectViaSharedTeam
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$ChannelType, [string]$SourceTeamId, [Parameter(Mandatory)][string]$HostTeamId)
-    if ($ChannelType -eq 'private' -or -not $SourceTeamId) { return 'DirectChannelMember' }
-    if ($SourceTeamId -eq $HostTeamId) { 'IndirectViaHostTeam' } else { 'IndirectViaSharedTeam' }
+    if ($ChannelType -eq 'private' -or -not $SourceTeamId -or $SourceTeamId -eq $HostTeamId) { return 'DirectChannelMember' }
+    'IndirectViaSharedTeam'
 }
 
 function ConvertTo-TarAccessRecord {
