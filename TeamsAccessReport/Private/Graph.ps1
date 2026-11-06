@@ -54,7 +54,7 @@ function Get-TarRequiredGraphScope {
     [OutputType([string[]])]
     param([switch]$AppOnly)
     $common = 'Team.ReadBasic.All', 'Channel.ReadBasic.All', 'TeamMember.Read.All', 'ChannelMember.Read.All', 'Files.Read.All', 'GroupMember.Read.All'
-    if ($AppOnly) { return [string[]]($common + 'User.Read.All') }
+    if ($AppOnly) { return [string[]]$script:TarAppPermissions['00000003-0000-0000-c000-000000000000'].Roles }
     return [string[]](@('User.Read') + $common + 'User.ReadBasic.All')
 }
 

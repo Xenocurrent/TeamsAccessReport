@@ -1,5 +1,19 @@
 ﻿# Changelog
 
+## 2.5.0 – 2026-11-06
+### Added
+- `New-TeamsAccessReportApp`: sets up a tenant in one step - non-exportable certificate in CurrentUser\My, single-tenant
+  app with exactly the report's application permissions (IDs looked up in the tenant), service principal, admin consent
+  and a connection profile. Accepts many tenants via the pipeline (CSV), one result row per tenant, failures isolated.
+  Retries throttling and directory replication delays; if consent fails the app is kept and a ConsentUrl is returned.
+- Start window: **Create app...** button next to the App ID runs the same setup in a separate window and fills in the
+  app ID and certificate.
+- `Organization.Read.All` is part of the app-only permission set (tenant name in the report).
+
+### Changed
+- Permission names live once in `$script:TarAppPermissions` (scope check and setup use the same list).
+- Worker windows share one seam (`Invoke-TarWorkerWindow`).
+
 ## 2.4.2 – 2026-11-06
 ### Fixed
 - The owner of a shared channel was labelled `IndirectViaHostTeam` (added in 2.4.1). In the real tenant Graph sets

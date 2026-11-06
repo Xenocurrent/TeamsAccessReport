@@ -4,7 +4,7 @@
 
 Describe 'Module surface' {
     It 'exports the report command and the profile commands' {
-        (Get-Command -Module TeamsAccessReport).Name | Sort-Object | Should -Be @('Get-TeamsAccessReportProfile', 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportPnPApp', 'New-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile')
+        (Get-Command -Module TeamsAccessReport).Name | Sort-Object | Should -Be @('Get-TeamsAccessReportProfile', 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportApp', 'New-TeamsAccessReportPnPApp', 'New-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile')
     }
     It 'has no mandatory parameters (everything missing is asked for or resolved)' {
         @((Get-Command Invoke-TeamsAccessReport).Parameters.Values | Where-Object { $_.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory } }).Count | Should -Be 0
@@ -753,7 +753,7 @@ Describe 'PnP app for delegated SharePoint' {
     It 'returns the client ID written by the worker and cleans up the result file' {
         InModuleScope TeamsAccessReport {
             Mock Test-TarPnPInstalled { $true }; Mock Write-TarLog { }
-            Mock Invoke-TarPnPRegistrationWorker { $script:lastResult = $ResultPath; '{"ok":true,"clientId":"AAAAAAAA-0000-0000-0000-000000000009"}' | Set-Content $ResultPath }
+            Mock Invoke-TarWorkerWindow { $script:lastResult = $Arguments[5]; '{"ok":true,"clientId":"AAAAAAAA-0000-0000-0000-000000000009"}' | Set-Content $Arguments[5] }
             New-TarPnPApp -Tenant 't' -Confirm:$false | Should -Be 'aaaaaaaa-0000-0000-0000-000000000009'
             Test-Path $script:lastResult | Should -BeFalse
         }
@@ -764,7 +764,7 @@ Describe 'PnP app for delegated SharePoint' {
     ) {
         InModuleScope TeamsAccessReport -Parameters @{ json = $Json; pattern = $Pattern } {
             Mock Test-TarPnPInstalled { $true }; Mock Write-TarLog { }
-            Mock Invoke-TarPnPRegistrationWorker { if ($json) { $json | Set-Content $ResultPath } }
+            Mock Invoke-TarWorkerWindow { if ($json) { $json | Set-Content $Arguments[5] } }
             { New-TarPnPApp -Tenant 't' -Confirm:$false } | Should -Throw -ExpectedMessage $pattern
         }
     }
@@ -868,6 +868,195 @@ Describe 'Graph enum handling' {
         InModuleScope TeamsAccessReport {
             $m = Get-TarSiteMap -Channels @([pscustomobject]@{ TeamId = 't'; TeamName = 'T'; ChannelId = 'c'; ChannelName = 'Delad'; ChannelType = 'unknownFutureValue'; SiteUrl = 'https://x/teams/T-Delad' })
             $m['https://x/teams/T-Delad'].Kind | Should -Be 'ChannelSite'
+        }
+    }
+}
+
+Describe 'Report app provisioning' {
+    BeforeAll {
+        $script:graphSp = @{ value = @(@{ id = 'sp-graph'; displayName = 'Microsoft Graph'; appRoles = @(
+                        'Team.ReadBasic.All', 'Channel.ReadBasic.All', 'TeamMember.Read.All', 'ChannelMember.Read.All', 'Files.Read.All', 'GroupMember.Read.All', 'User.Read.All', 'Organization.Read.All', 'Directory.ReadWrite.All' |
+                            ForEach-Object { @{ id = "id-$_"; value = $_; allowedMemberTypes = @('Application') } }) + @(@{ id = 'id-deleg'; value = 'User.Read'; allowedMemberTypes = @('User') }) }) }
+        $script:spoSp = @{ value = @(@{ id = 'sp-spo'; displayName = 'Office 365 SharePoint Online'; appRoles = @(@{ id = 'id-Sites.FullControl.All'; value = 'Sites.FullControl.All'; allowedMemberTypes = @('Application') }) }) }
+        function Set-ProvisioningMock { param([switch]$ExistingApp, [switch]$FailApp, [switch]$FailConsent)
+            # Mock bodies run in module scope; flags travel via a global (GetNewClosure would hide the mock's $Uri).
+            $global:TarProv = @{ Existing = [bool]$ExistingApp; FailApp = [bool]$FailApp; FailConsent = [bool]$FailConsent; Graph = $script:graphSp; Spo = $script:spoSp }
+            Mock -ModuleName TeamsAccessReport Write-TarLog { }
+            Mock -ModuleName TeamsAccessReport Get-TarGraphOne {
+                if ($Uri -like '*/applications?*') { return @{ value = @(if ($global:TarProv.Existing) { @{ id = 'o1'; appId = 'existing-app' } }) } }
+                if ($Uri -like "*appId eq '00000003-0000-0000-c000-000000000000'*") { return $global:TarProv.Graph }
+                if ($Uri -like "*appId eq '00000003-0000-0ff1-ce00-000000000000'*") { return $global:TarProv.Spo }
+                throw "unexpected GET $Uri"
+            }
+            Mock -ModuleName TeamsAccessReport New-TarAppCertificate { [pscustomobject]@{ RawData = [byte[]](1, 2, 3); Thumbprint = ('EE' * 20); NotAfter = [datetime]'2027-11-06' } }
+            Mock -ModuleName TeamsAccessReport Remove-TarStoreCertificate { }
+            Mock -ModuleName TeamsAccessReport Invoke-TarGraphWrite {
+                if ($Uri -like '*/applications') { if ($global:TarProv.FailApp) { throw 'Insufficient privileges' }; return @{ id = 'app-obj'; appId = 'dddddddd-0000-0000-0000-000000000004' } }
+                if ($Uri -like '*/servicePrincipals') { return @{ id = 'sp-new' } }
+                if ($Uri -like '*/appRoleAssignedTo') { if ($global:TarProv.FailConsent) { throw 'Authorization_RequestDenied' }; return @{ id = 'ra' } }
+                throw "unexpected POST $Uri"
+            }
+        }
+    }
+    AfterAll { Remove-Variable -Name TarProv -Scope Global -ErrorAction SilentlyContinue }
+    It 'maps permission names to application role IDs and ignores delegated scopes' {
+        InModuleScope TeamsAccessReport -Parameters @{ g = $script:graphSp } {
+            Mock Get-TarGraphOne { $g }
+            $r = Get-TarAppRoleId -GraphBase 'https://g' -ResourceAppId 'x' -Roles 'User.Read.All', 'Files.Read.All'
+            $r.ResourceSpId | Should -Be 'sp-graph'; $r.Roles.Id | Should -Be @('id-User.Read.All', 'id-Files.Read.All')
+            { Get-TarAppRoleId -GraphBase 'https://g' -ResourceAppId 'x' -Roles 'User.Read' } | Should -Throw -ExpectedMessage '*no application permission named: User.Read*'
+        }
+    }
+    It 'creates app with exactly the report permissions, certificate key, service principal and consent' {
+        Set-ProvisioningMock
+        $r = InModuleScope TeamsAccessReport { New-TarProvisionedApp -TenantId 't1' -ApplicationName 'TeamsAccessReport' -Confirm:$false }
+        $r.ConsentComplete | Should -BeTrue; $r.ClientId | Should -Be 'dddddddd-0000-0000-0000-000000000004'; $r.Granted.Count | Should -Be 9
+        $r.CertificateThumbprint | Should -Be ('EE' * 20)
+        Should -Invoke -ModuleName TeamsAccessReport Invoke-TarGraphWrite -Times 1 -Exactly -ParameterFilter {
+            $Uri -like '*/applications' -and $Body.signInAudience -eq 'AzureADMyOrg' -and
+            @($Body.requiredResourceAccess).Count -eq 2 -and @($Body.requiredResourceAccess[0].resourceAccess).Count -eq 8 -and
+            @($Body.requiredResourceAccess[0].resourceAccess.id) -notcontains 'id-Directory.ReadWrite.All' -and
+            $Body.requiredResourceAccess[1].resourceAccess[0].id -eq 'id-Sites.FullControl.All' -and
+            $Body.keyCredentials[0].key -eq 'AQID' -and $Body.keyCredentials[0].type -eq 'AsymmetricX509Cert'
+        }
+        Should -Invoke -ModuleName TeamsAccessReport Invoke-TarGraphWrite -Times 9 -Exactly -ParameterFilter { $Uri -like '*/appRoleAssignedTo' -and $Body.principalId -eq 'sp-new' }
+    }
+    It 'refuses an existing app name before creating a certificate' {
+        Set-ProvisioningMock -ExistingApp
+        { InModuleScope TeamsAccessReport { New-TarProvisionedApp -TenantId 't1' -ApplicationName 'TeamsAccessReport' -Confirm:$false } } | Should -Throw -ExpectedMessage '*already exists*existing-app*'
+        Should -Invoke -ModuleName TeamsAccessReport New-TarAppCertificate -Times 0 -Exactly
+    }
+    It 'removes the certificate it created when the app cannot be created' {
+        Set-ProvisioningMock -FailApp
+        { InModuleScope TeamsAccessReport { New-TarProvisionedApp -TenantId 't1' -ApplicationName 'TeamsAccessReport' -Confirm:$false } } | Should -Throw -ExpectedMessage '*Insufficient privileges*'
+        Should -Invoke -ModuleName TeamsAccessReport Remove-TarStoreCertificate -Times 1 -Exactly -ParameterFilter { $Thumbprint -eq ('EE' * 20) }
+    }
+    It 'keeps the app and returns a consent URL when consent fails' {
+        Set-ProvisioningMock -FailConsent
+        $r = InModuleScope TeamsAccessReport { New-TarProvisionedApp -TenantId 't1' -ApplicationName 'TeamsAccessReport' -Confirm:$false }
+        $r.ConsentComplete | Should -BeFalse; $r.ConsentError | Should -Match 'RequestDenied'
+        $r.ConsentUrl | Should -Be 'https://login.microsoftonline.com/t1/adminconsent?client_id=dddddddd-0000-0000-0000-000000000004'
+        Should -Invoke -ModuleName TeamsAccessReport Remove-TarStoreCertificate -Times 0 -Exactly
+    }
+    It 'Invoke-TarGraphWrite retries replication delay, then succeeds; fails fast on a real error' {
+        InModuleScope TeamsAccessReport {
+            Mock Start-Sleep { }; Mock Write-TarLog { }
+            $script:n = 0
+            Mock Invoke-TarGraphWriteRaw { $script:n++; if ($script:n -lt 3) { [pscustomobject]@{ StatusCode = 400; Body = @{ error = @{ message = "Resource 'x' does not exist or one of its queried reference-property objects are not present." } } } } else { [pscustomobject]@{ StatusCode = 201; Body = @{ id = 'ok' } } } }
+            (Invoke-TarGraphWrite -Method POST -Uri 'u' -Body @{ a = 1 }).id | Should -Be 'ok'
+            Should -Invoke Start-Sleep -Times 2 -Exactly
+            Mock Invoke-TarGraphWriteRaw { [pscustomobject]@{ StatusCode = 403; Body = @{ error = @{ message = 'Insufficient privileges' } } } }
+            { Invoke-TarGraphWrite -Method POST -Uri 'u' -Body @{ a = 1 } } | Should -Throw -ExpectedMessage '*HTTP 403*Insufficient privileges*'
+        }
+    }
+}
+
+Describe 'New-TeamsAccessReportApp (batch)' {
+    BeforeAll { $env:TEAMSACCESSREPORT_PROFILE_PATH = Join-Path $TestDrive 'app.json' }
+    AfterAll { Remove-Item Env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue }
+    BeforeEach {
+        Remove-Item $env:TEAMSACCESSREPORT_PROFILE_PATH -ErrorAction SilentlyContinue
+        Mock -ModuleName TeamsAccessReport Write-TarLog { }
+        Mock -ModuleName TeamsAccessReport Invoke-TarHttpRaw {
+            $id = if ($Uri -like '*/alpha.onmicrosoft.com/*') { 'aaaaaaaa-0000-0000-0000-00000000000a' } else { 'bbbbbbbb-0000-0000-0000-00000000000b' }
+            [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = "https://login.microsoftonline.com/$id/v2.0" } }
+        }
+        Mock -ModuleName TeamsAccessReport Connect-MgGraph { $script:connected = $TenantId }
+        Mock -ModuleName TeamsAccessReport Get-MgContext { [pscustomobject]@{ TenantId = $script:connected } }
+        Mock -ModuleName TeamsAccessReport Disconnect-MgGraph { }
+        Mock -ModuleName TeamsAccessReport New-TarProvisionedApp {
+            if ($TenantId -like 'bbbb*') { throw 'Insufficient privileges to complete the operation.' }
+            [pscustomobject]@{ ClientId = '11111111-0000-0000-0000-000000000001'; CertificateThumbprint = ('AB' * 20); CertificateExpires = '2027-11-06'; ConsentComplete = $true; ConsentUrl = 'u' }
+        }
+    }
+    It 'processes every piped tenant, isolates failures and saves profiles for the successful ones' {
+        $rows = @([pscustomobject]@{ Tenant = 'alpha' }, [pscustomobject]@{ Tenant = 'beta'; ProfileName = 'beta-prod' }) | New-TeamsAccessReportApp -Confirm:$false -InformationAction SilentlyContinue
+        $rows.Count | Should -Be 2
+        $rows[0].Status | Should -Be 'Ready'; $rows[0].ProfileName | Should -Be 'alpha'; $rows[0].ClientId | Should -Be '11111111-0000-0000-0000-000000000001'
+        $rows[1].Status | Should -Be 'Failed'; $rows[1].Error | Should -Match 'Insufficient privileges'
+        (Get-TeamsAccessReportProfile).Name | Should -Be @('alpha')
+        (Get-TeamsAccessReportProfile -Name alpha).Options.IncludeSharePoint | Should -BeTrue
+        Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -Times 2 -Exactly -ParameterFilter { $Scopes -contains 'AppRoleAssignment.ReadWrite.All' -and $ContextScope -eq 'Process' }
+        Should -Invoke -ModuleName TeamsAccessReport Disconnect-MgGraph -Times 2 -Exactly
+    }
+    It 'fails a tenant when the admin signs in to another tenant' {
+        Mock -ModuleName TeamsAccessReport Get-MgContext { [pscustomobject]@{ TenantId = 'someone-else' } }
+        $r = New-TeamsAccessReportApp -Tenant alpha -Confirm:$false -InformationAction SilentlyContinue
+        $r.Status | Should -Be 'Failed'; $r.Error | Should -Match 'expected aaaaaaaa'
+        Should -Invoke -ModuleName TeamsAccessReport New-TarProvisionedApp -Times 0 -Exactly
+    }
+    It 'refuses an existing profile before signing in, unless -Force' {
+        InModuleScope TeamsAccessReport { Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'alpha' -TenantId 't' -AuthMode Delegated) }
+        (New-TeamsAccessReportApp -Tenant alpha -Confirm:$false -InformationAction SilentlyContinue).Error | Should -Match 'already exists'
+        Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -Times 0 -Exactly
+        (New-TeamsAccessReportApp -Tenant alpha -Force -Confirm:$false -InformationAction SilentlyContinue).Status | Should -Be 'Ready'
+    }
+    It '-WhatIf creates nothing' {
+        (New-TeamsAccessReportApp -Tenant alpha -WhatIf -InformationAction SilentlyContinue).Status | Should -Be 'Skipped'
+        Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -Times 0 -Exactly
+    }
+    It 'reports consent pending with the consent URL' {
+        Mock -ModuleName TeamsAccessReport New-TarProvisionedApp { [pscustomobject]@{ ClientId = 'c'; CertificateThumbprint = ('AB' * 20); CertificateExpires = 'x'; ConsentComplete = $false; ConsentUrl = 'https://consent'; ConsentError = 'denied' } }
+        $r = New-TeamsAccessReportApp -Tenant alpha -NoProfile -Confirm:$false -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $r.Status | Should -Be 'ConsentPending'; $r.ConsentUrl | Should -Be 'https://consent'; $r.Error | Should -Be 'denied'
+        @(Get-TeamsAccessReportProfile).Count | Should -Be 0
+    }
+}
+
+Describe 'New-TarAppCertificate (real certificate store)' {
+    It 'creates a certificate with a private key in CurrentUser\My, not exportable on Windows' {
+        $subject = "CN=TAR-PesterTest-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        $c = InModuleScope TeamsAccessReport -Parameters @{ s = $subject } { Mock Write-TarLog { }; New-TarAppCertificate -Subject $s -Confirm:$false }
+        try {
+            $found = @(InModuleScope TeamsAccessReport -Parameters @{ t = $c.Thumbprint } { Get-TarCertificateCandidate -Thumbprint $t })
+            $found.Count | Should -Be 1; $found[0].HasPrivateKey | Should -BeTrue; $found[0].Valid | Should -BeTrue; $found[0].Subject | Should -Be $subject
+            if ($IsWindows) {
+                $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', 'CurrentUser'); $store.Open('ReadOnly')
+                try { $sc = @($store.Certificates.Find('FindByThumbprint', $c.Thumbprint, $false))[0] } finally { $store.Close() }
+                { $sc.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, 'x') } | Should -Throw
+            }
+        } finally { InModuleScope TeamsAccessReport -Parameters @{ t = $c.Thumbprint } { Remove-TarStoreCertificate -Thumbprint $t -Confirm:$false } }
+        @(InModuleScope TeamsAccessReport -Parameters @{ t = $c.Thumbprint } { Get-TarCertificateCandidate -Thumbprint $t }).Count | Should -Be 0
+    }
+}
+
+Describe 'Worker/New-App.ps1 (separate process)' {
+    It 'writes a Failed row for an invalid tenant without signing in' {
+        $out = Join-Path $TestDrive 'newapp.json'
+        $null = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot '..' 'Worker' 'New-App.ps1') -Tenant 'not a tenant' -ResultPath $out 2>&1
+        $r = Get-Content $out -Raw | ConvertFrom-Json
+        $r.Status | Should -Be 'Failed'; $r.Error | Should -Match 'not a tenant ID'
+    }
+}
+
+Describe 'Create app button (Windows Forms)' -Skip:(-not $IsWindows) {
+    BeforeAll { InModuleScope TeamsAccessReport { Add-Type -AssemblyName System.Windows.Forms, System.Drawing } }
+    It 'is enabled for app-only, disabled for delegated, and asks for a tenant first' {
+        InModuleScope TeamsAccessReport {
+            $ui = New-TarStartForm
+            try {
+                $ui.AppCreate.Enabled | Should -BeTrue
+                Invoke-TarStartFormAppCreate -Ui $ui; $ui.Error.Text | Should -Be 'Enter the tenant first.'
+                $ui.Delegated.Checked = $true; Update-TarStartFormState -Ui $ui; $ui.AppCreate.Enabled | Should -BeFalse
+            } finally { $ui.Form.Dispose() }
+        }
+    }
+    It 'fills app ID, selects the new certificate and marks the profile for saving' {
+        InModuleScope TeamsAccessReport {
+            Mock Invoke-TarHttpRaw { [pscustomobject]@{ StatusCode = 200; Body = [pscustomobject]@{ issuer = 'https://login.microsoftonline.com/aaaaaaaa-0000-0000-0000-00000000000a/v2.0' } } }
+            Mock Show-TarMessageBox { $true }
+            Mock New-TarAppViaWorker { [pscustomobject]@{ Status = 'Ready'; ClientId = '11111111-0000-0000-0000-000000000001'; CertificateThumbprint = ('CD' * 20) } }
+            Mock Get-TarCertificateCandidate { [pscustomobject]@{ Id = ('CD' * 20); Subject = 'CN=TeamsAccessReport-2026-11'; Expires = '2027-11-06'; Store = 'CurrentUser\My'; HasPrivateKey = $true; Valid = $true } }
+            $ui = New-TarStartForm
+            try {
+                $ui.Tenant.Text = 'alpha'
+                Invoke-TarStartFormAppCreate -Ui $ui
+                $ui.ClientId.Text | Should -Be '11111111-0000-0000-0000-000000000001'
+                $ui.Certificate.SelectedIndex | Should -Be 0; (Get-TarStartFormState -Ui $ui).CertificateThumbprint | Should -Be ('CD' * 20)
+                $ui.ProfileName.Text | Should -Be 'alpha'; $ui.Save.Checked | Should -BeTrue
+                $ui.TenantStatus.Text | Should -Match 'App ready'
+                Get-TarAppSetupPrompt -Tenant 'alpha.onmicrosoft.com' | Should -Match 'Privileged Role Administrator'
+            } finally { $ui.Form.Dispose() }
         }
     }
 }

@@ -36,6 +36,16 @@ $script:TarColumns = @{
 # Selection.json schema written by this version. Import accepts 1 (ChannelIds = 'ALL' | id | [ids]) and 2.
 $script:TarSelectionSchemaVersion = 2
 
+# Application permissions of the report app - single source for the scope check and for New-TeamsAccessReportApp.
+# Resource app IDs are Microsoft's well-known first-party IDs; permission IDs are looked up in the tenant at runtime.
+$script:TarAppPermissions = [ordered]@{
+    '00000003-0000-0000-c000-000000000000' = @{ Name = 'Microsoft Graph'; Roles = @('Team.ReadBasic.All', 'Channel.ReadBasic.All', 'TeamMember.Read.All', 'ChannelMember.Read.All', 'Files.Read.All', 'GroupMember.Read.All', 'User.Read.All', 'Organization.Read.All') }
+    # Reading role assignments requires Full Control (README, Permissions).
+    '00000003-0000-0ff1-ce00-000000000000' = @{ Name = 'Office 365 SharePoint Online'; Roles = @('Sites.FullControl.All') }
+}
+# Delegated scopes the admin consents to while New-TeamsAccessReportApp runs (create app, grant app roles).
+$script:TarProvisioningScopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
+
 # Public Entra authority (global cloud) used for unauthenticated tenant discovery.
 $script:TarAuthority = 'https://login.microsoftonline.com'
 # profiles.json schema written by this version.

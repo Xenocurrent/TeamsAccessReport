@@ -352,21 +352,20 @@ function Test-TarPnPInstalled {
     [bool](Get-Module -ListAvailable -Name PnP.PowerShell)
 }
 
-function Invoke-TarPnPRegistrationWorker {
-    # Seam: starts Worker/Register-PnPApp.ps1 in a visible pwsh window (sign-in and consent need the user) and waits.
+function Invoke-TarWorkerWindow {
+    # Seam: runs a Worker/*.ps1 script in a visible pwsh window (sign-in and consent need the user) and waits.
     # -WaitCallback runs every 200 ms while waiting (the start window uses it to stay responsive).
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Tenant, [Parameter(Mandatory)][string]$ApplicationName, [Parameter(Mandatory)][string]$ResultPath,
-        [scriptblock]$WaitCallback, [ValidateRange(60, 3600)][int]$TimeoutSeconds = 900)
+    param([Parameter(Mandatory)][string]$Script, [Parameter(Mandatory)][string[]]$Arguments, [scriptblock]$WaitCallback, [ValidateRange(60, 3600)][int]$TimeoutSeconds = 900)
     $psi = [System.Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
-    foreach ($a in '-NoProfile', '-NoLogo', '-File', (Join-Path $PSScriptRoot '..' 'Worker' 'Register-PnPApp.ps1'), '-Tenant', $Tenant, '-ApplicationName', $ApplicationName, '-ResultPath', $ResultPath) { $psi.ArgumentList.Add($a) }
+    foreach ($a in @('-NoProfile', '-NoLogo', '-File', (Join-Path $PSScriptRoot '..' 'Worker' $Script)) + $Arguments) { $psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $true
     $p = [System.Diagnostics.Process]::Start($psi)
     try {
         $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while (-not $p.WaitForExit(200)) {
             if ($WaitCallback) { & $WaitCallback }
-            if ((Get-Date) -gt $deadline) { try { $p.Kill() } catch { $null = $_ }; throw "PnP app registration did not finish within $TimeoutSeconds s." }
+            if ((Get-Date) -gt $deadline) { try { $p.Kill() } catch { $null = $_ }; throw "$Script did not finish within $TimeoutSeconds s." }
         }
     } finally { $p.Dispose() }
 }
@@ -381,12 +380,29 @@ function New-TarPnPApp {
     $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) "tar-pnp-$([guid]::NewGuid()).json"
     try {
         Write-TarLog "Registering PnP app '$ApplicationName' in $Tenant in a separate PowerShell window ..."
-        Invoke-TarPnPRegistrationWorker -Tenant $Tenant -ApplicationName $ApplicationName -ResultPath $resultPath -WaitCallback $WaitCallback
+        Invoke-TarWorkerWindow -Script 'Register-PnPApp.ps1' -Arguments @('-Tenant', $Tenant, '-ApplicationName', $ApplicationName, '-ResultPath', $resultPath) -WaitCallback $WaitCallback
         if (-not (Test-Path $resultPath)) { throw 'The registration window was closed before it finished.' }
         $r = Get-Content -Path $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
         if (-not $r.ok) { throw "PnP app registration failed: $($r.error)" }
         $id = ConvertTo-TarClientId ([string]$r.clientId)
         Write-TarLog "PnP app '$ApplicationName' registered: $id"
         $id
+    } finally { Remove-Item -Path $resultPath -ErrorAction SilentlyContinue }
+}
+
+function New-TarAppViaWorker {
+    # Start window: runs New-TeamsAccessReportApp in a separate window (its own Graph sign-in, isolated from this
+    # session) and returns its result row. Throws with the reason on failure.
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Tenant, [scriptblock]$WaitCallback)
+    if (-not $PSCmdlet.ShouldProcess($Tenant, 'Create the report app')) { return }
+    $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) "tar-app-$([guid]::NewGuid()).json"
+    try {
+        Invoke-TarWorkerWindow -Script 'New-App.ps1' -Arguments @('-Tenant', $Tenant, '-ResultPath', $resultPath) -WaitCallback $WaitCallback
+        if (-not (Test-Path $resultPath)) { throw 'The setup window was closed before it finished.' }
+        $r = Get-Content -Path $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($r.Status -eq 'Failed') { throw "App setup failed: $($r.Error)" }
+        $r
     } finally { Remove-Item -Path $resultPath -ErrorAction SilentlyContinue }
 }

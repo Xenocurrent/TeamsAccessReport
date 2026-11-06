@@ -9,6 +9,32 @@ Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
 Invoke-TeamsAccessReport            # Windows: one window for connection + options, then pop-ups only
 ```
 
+## Setting up a tenant (once per tenant)
+
+`New-TeamsAccessReportApp` creates everything app-only needs, so nothing is set up by hand:
+
+```powershell
+New-TeamsAccessReportApp -Tenant contoso                      # one tenant
+Import-Csv .\tenants.csv | New-TeamsAccessReportApp |          # many tenants: CSV with Tenant[,ProfileName]
+    Export-Csv .\setup-results.csv -NoTypeInformation
+```
+
+Per tenant you sign in once as an admin in the browser; then the command
+
+1. creates a certificate in `CurrentUser\My` with a **non-exportable** private key (RSA 2048, SHA-256, 1-3 years),
+2. registers a single-tenant app with exactly the application permissions below (IDs looked up in the tenant),
+3. creates the service principal and grants admin consent,
+4. saves a connection profile → `Invoke-TeamsAccessReport -ProfileName contoso`.
+
+One app and one certificate **per tenant**, so a lost certificate affects one tenant only. Each tenant produces one
+result row (`Ready`, `ConsentPending` with a `ConsentUrl`, `Failed` with `Error`); a failure never stops the batch.
+Required role of the admin: **Privileged Role Administrator** (consent to Microsoft Graph application permissions)
+plus **Application Administrator** or **Cloud Application Administrator** – or Global Administrator. The command never
+deletes anything except a certificate it created when the app itself could not be created. In the start window the
+**Create app...** button next to the App ID does the same for the tenant entered there.
+
+New permissions can take a few minutes to apply before the first report run works.
+
 ## Connecting to a tenant
 
 Nothing has to be edited in a command. On **Windows**, `Invoke-TeamsAccessReport` without connection parameters opens
@@ -78,6 +104,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 
 | Rule | Why |
 |---|---|
+| The report only reads (GET); the only writes are in `Provisioning.ps1` (`New-TeamsAccessReportApp`) through `Invoke-TarGraphWriteRaw` | The read-only guarantee is checkable in one place |
 | All Graph IO goes through `Invoke-TarGraphRaw`; all SharePoint IO through `Invoke-TarSpRaw`; tenant discovery through `Invoke-TarHttpRaw` | One seam per external service; tests mock only these |
 | No script-scope variables in logic; everything flows through `-Context` | Explicit dependencies, testable, PSScriptAnalyzer can verify parameter usage |
 | Phases communicate only through the files defined in `Constants.ps1` (`$script:TarFile`) | Each phase can be re-run or resumed in isolation; the files are a data contract |
@@ -96,7 +123,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 
 | Mode | Graph | SharePoint (`-IncludeSharePoint`) |
 |---|---|---|
-| App-only (recommended) | Team.ReadBasic.All, Channel.ReadBasic.All, TeamMember.Read.All, ChannelMember.Read.All, Files.Read.All, GroupMember.Read.All, User.Read.All | Sites.FullControl.All (reading role assignments requires Full Control) or Sites.Selected + fullcontrol per site |
+| App-only (recommended) | Team.ReadBasic.All, Channel.ReadBasic.All, TeamMember.Read.All, ChannelMember.Read.All, Files.Read.All, GroupMember.Read.All, User.Read.All, Organization.Read.All (tenant name) | Sites.FullControl.All (reading role assignments requires Full Control) or Sites.Selected + fullcontrol per site |
 | Delegated | Same, but User.ReadBasic.All + User.Read | AllSites.FullControl + a dedicated PnP app (`-PnPClientId`) |
 
 ## Output (data contract)

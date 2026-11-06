@@ -2,11 +2,11 @@
 $ErrorActionPreference = 'Stop'
 
 # Load order is explicit: Constants before anything that references $script:TarFile etc.
-$privateFiles = 'Constants', 'Logging', 'Util', 'Store', 'Graph', 'Connection', 'Selection', 'Gui', 'Inventory', 'SharePointScan', 'Resolution', 'Analysis'
+$privateFiles = 'Constants', 'Logging', 'Util', 'Store', 'Graph', 'Connection', 'Provisioning', 'Selection', 'Gui', 'Inventory', 'SharePointScan', 'Resolution', 'Analysis'
 foreach ($f in $privateFiles) { . (Join-Path $PSScriptRoot 'Private' "$f.ps1") }
 foreach ($f in Get-ChildItem (Join-Path $PSScriptRoot 'Public') -Filter *.ps1) { . $f.FullName }
 
-Export-ModuleMember -Function 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportProfile', 'Get-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile', 'New-TeamsAccessReportPnPApp'
+Export-ModuleMember -Function 'Invoke-TeamsAccessReport', 'New-TeamsAccessReportProfile', 'Get-TeamsAccessReportProfile', 'Remove-TeamsAccessReportProfile', 'New-TeamsAccessReportPnPApp', 'New-TeamsAccessReportApp'
 
 # Tab completion of saved profile names (runs in module scope, so private functions are available).
 $profileNameCompleter = {
