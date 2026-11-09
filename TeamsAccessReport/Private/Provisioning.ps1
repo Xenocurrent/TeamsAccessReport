@@ -106,7 +106,7 @@ function New-TarProvisionedApp {
     $escaped = $ApplicationName.Replace("'", "''")
     $existing = @(Get-TarProperty (Get-TarGraphOne -Uri "$GraphBase/applications?`$filter=displayName eq '$escaped'&`$select=id,appId") 'value')
     if ($existing.Count) {
-        throw "An app named '$ApplicationName' already exists in this tenant (client ID $(Get-TarProperty $existing[0] 'appId')). Use it with New-TeamsAccessReportProfile, or pass -ApplicationName for a new one."
+        throw "An app named '$ApplicationName' already exists in this tenant (client ID $(Get-TarProperty $existing[0] 'appId')). Use it with New-TeamsAccessReportProfile, or choose another name with -ApplicationName."
     }
     $resources = @(foreach ($k in $script:TarAppPermissions.Keys) { Get-TarAppRoleId -GraphBase $GraphBase -ResourceAppId $k -Roles $script:TarAppPermissions[$k].Roles })
     if (-not $PSCmdlet.ShouldProcess($TenantId, "Create app '$ApplicationName' with $(@($resources.Roles).Count) application permissions and grant admin consent")) { return }
@@ -163,4 +163,28 @@ function New-TarProvisionedApp {
         $result | Add-Member -NotePropertyName ConsentError -NotePropertyValue $_.Exception.Message
     }
     $result
+}
+
+function Assert-TarAppProfileName {
+    # Validates the profile name and refuses to overwrite an existing profile (unless -Force) before anything is created.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$TenantId, [switch]$NoProfile, [switch]$Force)
+    if ($NoProfile) { return }
+    $null = New-TarProfileRecord -Name $Name -TenantId $TenantId -AuthMode Delegated
+    if (-not $Force -and @(Read-TarProfileStore | Where-Object Name -eq $Name).Count) { throw "Profile '$Name' already exists. Use -Force to replace it or -ProfileName for another name." }
+}
+
+function Get-TarSignedInOrganization {
+    # Tenant of the current Graph sign-in: display name and initial (*.onmicrosoft.com) domain. Needs delegated User.Read.
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([string]$GraphBase = 'https://graph.microsoft.com/v1.0')
+    $org = @(Get-TarProperty (Get-TarGraphOne -Uri "$GraphBase/organization?`$select=id,displayName,verifiedDomains") 'value')[0]
+    if (-not $org) { throw 'Could not read the signed-in organization (GET /organization returned nothing).' }
+    $initial = @(@(Get-TarProperty $org 'verifiedDomains') | Where-Object { Get-TarProperty $_ 'isInitial' })[0]
+    [pscustomobject]@{
+        TenantId      = [string](Get-TarProperty $org 'id')
+        DisplayName   = [string](Get-TarProperty $org 'displayName')
+        InitialDomain = $(if ($initial) { [string](Get-TarProperty $initial 'name') } else { $null })
+    }
 }
