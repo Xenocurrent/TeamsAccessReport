@@ -123,6 +123,14 @@
             -ResumeSelection $resumeSelection -CanPrompt:$canPrompt -SelectionMode $SelectionMode
     }
     if (-not $conn) { Write-TarLog 'Cancelled at connection selection.' -Level WARN; return }
+    if ($ProfileName) {
+        # Report options saved in the profile apply unless the switch is given on the command line.
+        $saved = Get-TarProperty (Get-TarProfile -Name $ProfileName) 'Options'
+        $applied = @(foreach ($k in 'IncludeSharePoint', 'IncludeUserAssociations', 'SelectChannels') {
+                if (-not $PSBoundParameters.ContainsKey($k) -and $saved -and [bool](Get-TarProperty $saved $k)) { Set-Variable -Name $k -Value ([switch]$true); $k }
+            })
+        if ($applied.Count) { Write-TarLog "Options from profile '$ProfileName': $($applied -join ', ')" }
+    }
     $appOnly = $conn.AuthMode -eq 'AppOnly'
     $spClientId = if ($PnPClientId) { $PnPClientId } elseif ($conn.PnPClientId) { $conn.PnPClientId } elseif ($appOnly) { $conn.ClientId } else { $null }
     if ($IncludeSharePoint -and -not $spClientId) {

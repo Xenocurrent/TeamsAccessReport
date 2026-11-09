@@ -44,7 +44,8 @@ $script:TarAppPermissions = [ordered]@{
     '00000003-0000-0ff1-ce00-000000000000' = @{ Name = 'Office 365 SharePoint Online'; Roles = @('Sites.FullControl.All') }
 }
 # Delegated scopes the admin consents to while New-TeamsAccessReportApp runs (create app, grant app roles).
-$script:TarProvisioningScopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
+# User.Read: GET /organization (tenant name and initial domain when the tenant comes from the sign-in).
+$script:TarProvisioningScopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All', 'User.Read')
 
 # Public Entra authority (global cloud) used for unauthenticated tenant discovery.
 $script:TarAuthority = 'https://login.microsoftonline.com'

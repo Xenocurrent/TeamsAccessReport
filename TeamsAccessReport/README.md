@@ -14,7 +14,8 @@ Invoke-TeamsAccessReport            # Windows: one window for connection + optio
 `New-TeamsAccessReportApp` creates everything app-only needs, so nothing is set up by hand:
 
 ```powershell
-New-TeamsAccessReportApp -Tenant contoso                      # one tenant
+New-TeamsAccessReportApp                                      # one tenant: taken from the admin sign-in, you confirm
+New-TeamsAccessReportApp -Tenant contoso                      # one tenant, named explicitly
 Import-Csv .\tenants.csv | New-TeamsAccessReportApp |          # many tenants: CSV with Tenant[,ProfileName]
     Export-Csv .\setup-results.csv -NoTypeInformation
 ```
@@ -24,7 +25,11 @@ Per tenant you sign in once as an admin in the browser; then the command
 1. creates a certificate in `CurrentUser\My` with a **non-exportable** private key (RSA 2048, SHA-256, 1-3 years),
 2. registers a single-tenant app with exactly the application permissions below (IDs looked up in the tenant),
 3. creates the service principal and grants admin consent,
-4. saves a connection profile → `Invoke-TeamsAccessReport -ProfileName contoso`.
+4. saves a connection profile (SharePoint and user associations on) → `Invoke-TeamsAccessReport`, pick the profile in
+   the start window, or `Invoke-TeamsAccessReport -ProfileName contoso`.
+
+Without `-Tenant` the command signs you in first, then shows account, tenant name, initial domain and tenant ID and
+creates nothing until you answer Yes (default No). The profile is named after the initial `*.onmicrosoft.com` domain.
 
 One app and one certificate **per tenant**, so a lost certificate affects one tenant only. Each tenant produces one
 result row (`Ready`, `ConsentPending` with a `ConsentUrl`, `Failed` with `Error`); a failure never stops the batch.

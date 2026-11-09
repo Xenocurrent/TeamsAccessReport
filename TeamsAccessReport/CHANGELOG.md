@@ -1,5 +1,19 @@
 ﻿# Changelog
 
+## 2.6.0 – 2026-11-09
+### Added
+- `New-TeamsAccessReportApp` without `-Tenant`: the tenant comes from the admin sign-in. The command shows the
+  signed-in account, tenant name, initial domain and tenant ID and creates nothing until you answer Yes (default No);
+  No signs out and returns Status `Cancelled`. The profile is named after the initial `*.onmicrosoft.com` domain.
+  `-Confirm:$false` skips the question; without a console `-Tenant` is required. Provisioning scopes add `User.Read`
+  (GET /organization).
+
+### Changed
+- `-ProfileName`: report options saved in the profile (`IncludeSharePoint`, `IncludeUserAssociations`,
+  `SelectChannels`) now apply; a switch on the command line still wins. Profiles from `New-TeamsAccessReportApp`
+  include SharePoint and user associations.
+- Existing-app error text: "choose another name with -ApplicationName".
+
 ## 2.5.1 – 2026-11-06
 ### Fixed
 - Delegated SharePoint scan opened a browser sign-in for every site. The first site now signs in interactively and the

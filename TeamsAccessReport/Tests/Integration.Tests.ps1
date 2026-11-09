@@ -174,11 +174,21 @@ Describe 'Connection profiles end to end' {
     It 'runs with -ProfileName only and records it for -Resume and the rerun command' {
         $out = Join-Path $TestDrive 'byprofile'
         $s = Invoke-TeamsAccessReport -ProfileName contoso -AllTeams -Force -OutputPath $out -InformationAction SilentlyContinue -WarningAction SilentlyContinue
-        $s.ResultStatus | Should -Be 'Complete'
+        $s.ResultStatus | Should -Be 'Complete'; $s.SharePointIncluded | Should -BeFalse   # profile without saved options
         Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -ParameterFilter { $TenantId -eq '11111111-1111-1111-1111-111111111111' -and $ClientId -eq '22222222-2222-2222-2222-222222222222' }
         $sel = Get-Content (Join-Path $out 'Selection.json') -Raw | ConvertFrom-Json
         $sel.ProfileName | Should -Be 'contoso'
         $sel.RerunCommand | Should -Match "-ProfileName 'contoso'"; $sel.RerunCommand | Should -Not -Match 'CertificateThumbprint'
+    }
+    It 'report options saved in the profile apply with -ProfileName only' {
+        InModuleScope TeamsAccessReport -Parameters @{ c = $AppArgs.ClientId; th = $AppArgs.CertificateThumbprint } {
+            Save-TarProfile -ProfileRecord (New-TarProfileRecord -Name 'withopts' -TenantId '11111111-1111-1111-1111-111111111111' -TenantQuery 'contoso.onmicrosoft.com' -AuthMode AppOnly -ClientId $c -CertificateThumbprint $th -Options @{ IncludeSharePoint = $true }) -Confirm:$false
+        }
+        $out = Join-Path $TestDrive 'withopts'
+        $s = Invoke-TeamsAccessReport -ProfileName withopts -AllTeams -Force -OutputPath $out -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $s.SharePointIncluded | Should -BeTrue
+        Should -Invoke -ModuleName TeamsAccessReport Connect-PnPOnline -Scope It
+        Remove-TeamsAccessReportProfile -Name withopts -Confirm:$false -InformationAction SilentlyContinue
     }
     It '-Resume without any connection parameter picks the profile from Selection.json' {
         $out = Join-Path $TestDrive 'byprofile'

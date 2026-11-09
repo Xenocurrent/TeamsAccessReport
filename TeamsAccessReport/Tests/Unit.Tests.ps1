@@ -991,6 +991,43 @@ Describe 'New-TeamsAccessReportApp (batch)' {
         Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -Times 0 -Exactly
         (New-TeamsAccessReportApp -Tenant alpha -Force -Confirm:$false -InformationAction SilentlyContinue).Status | Should -Be 'Ready'
     }
+    It 'without -Tenant: takes the tenant from the sign-in, asks, then saves a profile named after the initial domain' {
+        Mock -ModuleName TeamsAccessReport Connect-MgGraph { }   # no -TenantId here (strict mode: the batch mock reads it)
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $true }
+        Mock -ModuleName TeamsAccessReport Get-MgContext { [pscustomobject]@{ TenantId = 'AAAAAAAA-0000-0000-0000-00000000000A'; Account = 'admin@alpha.onmicrosoft.com' } }
+        Mock -ModuleName TeamsAccessReport Get-TarGraphOne { @{ value = @(@{ id = 'aaaaaaaa-0000-0000-0000-00000000000a'; displayName = 'Alpha AB'; verifiedDomains = @(@{ name = 'alpha.se'; isInitial = $false }, @{ name = 'Alpha.onmicrosoft.com'; isInitial = $true }) }) } }
+        Mock -ModuleName TeamsAccessReport Read-TarYesNo { $true }
+        $r = New-TeamsAccessReportApp -InformationAction SilentlyContinue
+        $r.Status | Should -Be 'Ready'; $r.Tenant | Should -Be 'alpha.onmicrosoft.com'; $r.ProfileName | Should -Be 'alpha'
+        (Get-TeamsAccessReportProfile -Name alpha).TenantId | Should -Be 'aaaaaaaa-0000-0000-0000-00000000000a'
+        Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -Times 1 -Exactly -ParameterFilter { -not $PesterBoundParameters.ContainsKey('TenantId') -and $Scopes -contains 'User.Read' }
+        Should -Invoke -ModuleName TeamsAccessReport Read-TarYesNo -Times 1 -Exactly -ParameterFilter { $Prompt -match 'Alpha AB' -and $Prompt -match 'admin@alpha.onmicrosoft.com' -and $Prompt -match "profile 'alpha'" -and -not $Default }
+        Should -Invoke -ModuleName TeamsAccessReport New-TarProvisionedApp -Times 1 -Exactly -ParameterFilter { $TenantId -eq 'aaaaaaaa-0000-0000-0000-00000000000a' }
+        Should -Invoke -ModuleName TeamsAccessReport Invoke-TarHttpRaw -Times 0 -Exactly
+    }
+    It 'without -Tenant: No creates nothing and signs out' {
+        Mock -ModuleName TeamsAccessReport Connect-MgGraph { }   # no -TenantId here (strict mode: the batch mock reads it)
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $true }
+        Mock -ModuleName TeamsAccessReport Get-MgContext { [pscustomobject]@{ TenantId = 'aaaaaaaa-0000-0000-0000-00000000000a'; Account = 'admin@wrong' } }
+        Mock -ModuleName TeamsAccessReport Get-TarGraphOne { @{ value = @(@{ id = 'x'; displayName = 'Wrong'; verifiedDomains = @(@{ name = 'wrong.onmicrosoft.com'; isInitial = $true }) }) } }
+        Mock -ModuleName TeamsAccessReport Read-TarYesNo { $false }
+        $r = New-TeamsAccessReportApp -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $r.Status | Should -Be 'Cancelled'; $r.Error | Should -Match 'another account'
+        Should -Invoke -ModuleName TeamsAccessReport New-TarProvisionedApp -Times 0 -Exactly
+        Should -Invoke -ModuleName TeamsAccessReport Disconnect-MgGraph -Times 1 -Exactly
+        @(Get-TeamsAccessReportProfile).Count | Should -Be 0
+    }
+    It 'without -Tenant: -Confirm:$false skips the question; no console fails clearly' {
+        Mock -ModuleName TeamsAccessReport Connect-MgGraph { }   # no -TenantId here (strict mode: the batch mock reads it)
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $true }
+        Mock -ModuleName TeamsAccessReport Get-MgContext { [pscustomobject]@{ TenantId = 'aaaaaaaa-0000-0000-0000-00000000000a'; Account = 'a' } }
+        Mock -ModuleName TeamsAccessReport Get-TarGraphOne { @{ value = @(@{ id = 'x'; displayName = 'Alpha'; verifiedDomains = @(@{ name = 'alpha.onmicrosoft.com'; isInitial = $true }) }) } }
+        Mock -ModuleName TeamsAccessReport Read-TarYesNo { throw 'must not ask' }
+        (New-TeamsAccessReportApp -Confirm:$false -InformationAction SilentlyContinue).Status | Should -Be 'Ready'
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $false }
+        $r = New-TeamsAccessReportApp -Confirm:$false -InformationAction SilentlyContinue
+        $r.Status | Should -Be 'Failed'; $r.Error | Should -Match 'Pass -Tenant'
+    }
     It '-WhatIf creates nothing' {
         (New-TeamsAccessReportApp -Tenant alpha -WhatIf -InformationAction SilentlyContinue).Status | Should -Be 'Skipped'
         Should -Invoke -ModuleName TeamsAccessReport Connect-MgGraph -Times 0 -Exactly
