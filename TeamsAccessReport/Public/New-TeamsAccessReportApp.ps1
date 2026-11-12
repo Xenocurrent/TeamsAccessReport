@@ -41,7 +41,7 @@
         Import-Csv .\tenants.csv | New-TeamsAccessReportApp | Export-Csv .\setup-results.csv
         tenants.csv: Tenant[,ProfileName]. One browser sign-in per tenant; one result row per tenant.
     .OUTPUTS
-        PSCustomObject per tenant: Tenant, Status (Ready | ConsentPending | Failed), ProfileName, ClientId,
+        PSCustomObject per tenant: Tenant, Status (Ready | ConsentPending | Failed | Cancelled | Skipped), ProfileName, ClientId,
         CertificateThumbprint, CertificateExpires, ConsentUrl, Error. Status Cancelled when you answer No or close the sign-in window.
     #>
     [CmdletBinding(SupportsShouldProcess)]

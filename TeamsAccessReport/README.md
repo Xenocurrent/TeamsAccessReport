@@ -2,7 +2,12 @@
 
 Audit report of **actual** access in Microsoft Teams and the associated SharePoint sites:
 team and channel membership (direct/indirect, cross-tenant), SharePoint permissions down to item level,
-resolution of group claims to users, and drift between Teams and SharePoint.
+resolution of group claims to users, every sharing link with its URL and creator, and drift findings between Teams
+and SharePoint (broad grants, organization/anonymous links, access outside the team, internal users who are also guests).
+
+**Requirements:** PowerShell 7.2+ (the SharePoint worker needs 7.4.6+, PnP.PowerShell 3.0+; tested on 7.7),
+Microsoft.Graph.Authentication, and PnP.PowerShell for `-IncludeSharePoint`. Read-only against the tenant; verified in a
+real tenant app-only (4 teams, 4 sites, item-level permissions).
 
 ```powershell
 Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
@@ -32,7 +37,18 @@ Without `-Tenant` the command signs you in first, then shows account, tenant nam
 creates nothing until you answer Yes (default No). The profile is named after the initial `*.onmicrosoft.com` domain.
 
 One app and one certificate **per tenant**, so a lost certificate affects one tenant only. Each tenant produces one
-result row (`Ready`, `ConsentPending` with a `ConsentUrl`, `Failed` with `Error`); a failure never stops the batch.
+result row; a failure never stops the batch:
+
+| Status | Meaning |
+|---|---|
+| `Ready` | App, certificate, consent and profile are in place |
+| `ConsentPending` | App kept; open `ConsentUrl` as an admin to finish |
+| `Failed` | `Error` holds the reason (for example missing admin role) |
+| `Cancelled` | You answered No, or closed/cancelled the sign-in window |
+| `Skipped` | `-WhatIf` |
+
+On Windows the sign-in uses Web Account Manager (WAM); its window can open **behind** the terminal. A closed or hidden
+window ends as `Cancelled` – run the command again.
 Required role of the admin: **Privileged Role Administrator** (consent to Microsoft Graph application permissions)
 plus **Application Administrator** or **Cloud Application Administrator** – or Global Administrator. The command never
 deletes anything except a certificate it created when the app itself could not be created. In the start window the
@@ -97,7 +113,7 @@ Invoke-TeamsAccessReport (Public)          orchestration, validation, try/finall
  ├─ Connect-TarGraph            Graph.ps1      sign-in, tenant discovery, SDK retry
  ├─ Get/Import-TarTeamSelection Selection.ps1  interactive selection (UI isolated from logic)
  ├─ Phase 1 Invoke-TarTeamInventory   Inventory.ps1      Graph → Teams/TeamsAccess/Channels/Incoming.csv
- ├─ Phase 2 Start-TarSharePointScan   SharePointScan.ps1 PnP   → SPAssignments/SPGroupMembers.csv
+ ├─ Phase 2 Start-TarSharePointScan   SharePointScan.ps1 PnP   → SPAssignments/SPGroupMembers/SharingLinks.csv
  │          └─ pwsh Worker/Invoke-SharePointScan.ps1   (separate process)
  ├─ Phase 3 Invoke-TarPrincipalResolution Resolution.ps1 Graph → EffectiveSharePointAccess.csv
  ├─ Phase 4 Invoke-TarDriftAnalysis / ExternalAssociationScan  Analysis.ps1 → DriftReport/ExternalAssociations.csv
@@ -143,7 +159,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 | `SPGroupMembers.csv` | SiteUrl, GroupTitle | Members of each SharePoint group |
 | `SharingLinks.csv` | SiteUrl, ObjectPath, ShareId | One row per sharing link on an item or folder: `LinkKind`, `Access` (View/Edit/Review), `Url`, `Created`/`CreatedBy`, `LastModified`/`LastModifiedBy`, `Expiration`, `RequiresPassword`, `BlocksDownload`, `HasExternalGuestInvitees`, `Recipients`; `LinkGroup` joins to `DriftReport.csv` `DisplayName` (see below) |
 | `EffectiveSharePointAccess.csv` | SiteUrl, UserId | Resolved access with `ExpansionPath` |
-| `DriftReport.csv` | SiteUrl, Finding, UserId | Drift findings, `Severity` High/Medium/Low/Info, `Cause` (see below) |
+| `DriftReport.csv` | SiteUrl, Finding, UserId | Drift findings, `Severity` High/Medium/Low/Info, `Cause` (see [Drift findings](#drift-findings)) |
 | `ExternalAssociations.csv` | UserId, HostTenantId | Internal users' teams in other tenants (`-IncludeUserAssociations`) |
 | `Errors.csv` | – | Failed steps; archived to `state/` on `-Resume` |
 | `Selection.json` | – | Selected teams; schema 2: `AllChannels` (bool) + `ChannelIds` (always an array) |
@@ -153,18 +169,38 @@ File presence is part of the contract: **present with only a header row** = the 
 **absent** = the phase did not run (for example `-IncludeSharePoint` was not set). Column order is defined once in
 `Private/Constants.ps1` (`$script:TarColumns`); `-Resume` refuses folders written with a different column set.
 
-`Cause` in `DriftReport.csv` names a known by-design explanation; empty means no default explains the finding.
-Severity is not lowered by a cause – the access is real, the cause only tells you where it comes from.
+### Drift findings
+
+Phase 4 compares, per site, who should have access (team or channel members) with who actually has it (resolved
+SharePoint permissions). Limited Access rows are ignored.
+
+| Finding | Severity | Meaning |
+|---|---|---|
+| `BroadGrant` | High | "Everyone" or "Everyone except external users" has access (see `Cause`) |
+| `AnonymousLink` | High | An "Anyone with the link" sharing link exists |
+| `OrganizationLink` | High | A "People in your organization" sharing link exists |
+| `SiteCollectionAdminNotInTeams` | Medium (High for guests) | Site collection admin who is not a team/channel member |
+| `SiteAccessNotInTeams` | Medium (High for guests) | Site-level access without team/channel membership |
+| `ItemOrListAccessNotInTeams` | Low (High for guests) | Access only to lists or items, without membership |
+| `InternalUserAlsoGuest` | Medium | Guest whose name matches an internal account on the same site (below) |
+| `UnresolvedPrincipal` | Medium | A principal the resolver could not map to a user or group |
+| `InTeamsNotInSharePoint` | Info | Team/channel member without site access |
+
+For link findings `Upn` is empty and `DisplayName` holds the `SharingLinks.<id>.<kind>.<ShareId>` group – the join key
+to `SharingLinks.csv` (`LinkGroup`), which has the URL and creator.
+
+`Cause` names a known by-design explanation; empty means no default explains the finding. Severity is not lowered by a
+cause – the access is real, the cause only tells you where it comes from.
 
 | Cause | Meaning |
 |---|---|
-| `PublicTeamDefault` | "Everyone except external users" in the associated Members group of a **public** team site. Microsoft adds it automatically; making the team private removes it. All conditions must hold (team site, public, root web, associated Members group), so a manually added grant is never attributed to the default. |
+| `PublicTeamDefault` | "Everyone except external users" in the associated Members group of a **public** team site. Microsoft adds it automatically; making the team private removes it. Set on the root web and on lists/items with broken inheritance that grant that same group directly (their ACL is a copy of the parent's). A grant through any other group, a nested path, a subweb or a private team never gets this cause. |
 
-`InternalUserAlsoGuest` (Medium) flags a guest whose display name matches an internal account that has access to the
-**same** site or team – typically one person with both an internal and a guest account, so offboarding and Conditional
-Access only cover one of them. Names are compared without case, diacritics or the separators `. _ -` and need at least
-two words (`gisela.zinn` matches `Gisela Zinn`; `admin` matches nothing). A name match is a lead, not proof: the row is
-the guest; `ExpansionPath` names the internal account(s) (`NameMatch > Internal:<upn> (<id>)`) and `Scope` lists where the
+`InternalUserAlsoGuest` flags a guest whose display name matches an internal account that has access to the **same**
+site or team – typically one person with both an internal and a guest account, so offboarding and Conditional Access
+only cover one of them. Names are compared without case, diacritics or the separators `. _ -` and need at least two
+words (`gisela.zinn` matches `Gisela Zinn`; `admin` matches nothing). A name match is a lead, not proof: the row is the
+guest; `ExpansionPath` names the internal account(s) (`NameMatch > Internal:<upn> (<id>)`) and `Scope` lists where the
 guest has access (`Teams:Team`, `SharePoint:Web`, ...). Verify in Entra before removing either account.
 
 ### Sharing links
@@ -202,8 +238,12 @@ Contributing: create a branch, open a pull request, and wait for green CI on bot
 
 ## Known limitations
 
-- Not yet verified against a real tenant. `Summary.json` → `ResultStatus` and `Teams.csv` → `Completeness` reveal incomplete data.
+- Verified in one real tenant (app-only, PowerShell 7.7). `Summary.json` → `ResultStatus` and `Teams.csv` →
+  `Completeness` reveal incomplete data on every run.
+- `SharingLinks.csv`: that app-only calls return the link `Url` is not yet confirmed in a real tenant. Rows without a
+  `Url` still carry kind, creator and dates.
+- `InternalUserAlsoGuest` only sees accounts with access to a scanned site or team; duplicate guests without such access
+  (for example an unused guest account) are not reported.
 - PnP's error format on 429 is not verified (parsed from the error message; the Graph side uses the status code).
 - Hidden lists (`Hidden eq true`) are not scanned.
-- Delegated PnP sign-in may prompt per site (hypothesis) – use app-only.
 - SharePoint role names are localized; `Limited Access` detection covers English and Swedish only (extend `$script:TarLimitedAccessRoles`).
