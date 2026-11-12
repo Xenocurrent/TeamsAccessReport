@@ -80,7 +80,9 @@ function Resolve-TarSpPrincipal {
         '^SHAREPOINT\\system$|^i:0i\.t\|ms\.sp\.ext\|' { New-TarPrincipal -Kind SystemOrApp -Upn $Login -DisplayName $Title -Path $PathPrefix; return }
     }
     $kind = if ($Title -match '^SharingLinks\.[^.]+\.Anonymous\w*\.') { 'AnonymousLink' } elseif ($Title -match '^SharingLinks\.[^.]+\.Organization\w*\.') { 'OrganizationLink' } else { 'Unresolved' }
-    New-TarPrincipal -Kind $kind -Upn ($Email ? $Email : $Login) -DisplayName $Title -Path $PathPrefix
+    # A sharing-link group is not a user: its login is the group title, so Upn stays empty (DisplayName identifies the link).
+    $upn = if ($kind -eq 'Unresolved') { $Email ? $Email : $Login } else { $null }
+    New-TarPrincipal -Kind $kind -Upn $upn -DisplayName $Title -Path $PathPrefix
 }
 
 function Invoke-TarPrincipalResolution {

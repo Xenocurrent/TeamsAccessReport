@@ -79,7 +79,7 @@ function Write-TarRecord {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Name, [AllowEmptyCollection()][object[]]$InputObject)
     if (-not $InputObject -or $InputObject.Count -eq 0) { return }
-    $InputObject | Protect-TarCsvValue | Export-Csv -Path (Get-TarStorePath $Context $Name) -Append -NoTypeInformation -Encoding utf8BOM
+    $InputObject | Protect-TarCsvValue | Export-Csv -Path (Get-TarStorePath $Context $Name) -Append -Encoding utf8BOM
 }
 
 function Read-TarRecord {
@@ -97,7 +97,7 @@ function Set-TarRecord {
     $p = Get-TarStorePath $Context $Name
     if (-not $PSCmdlet.ShouldProcess($p, 'Rewrite')) { return }
     if (Test-Path $p) { Remove-Item $p -Force }
-    if ($InputObject -and $InputObject.Count) { $InputObject | Protect-TarCsvValue | Export-Csv -Path $p -NoTypeInformation -Encoding utf8BOM }
+    if ($InputObject -and $InputObject.Count) { $InputObject | Protect-TarCsvValue | Export-Csv -Path $p -Encoding utf8BOM }
     else { Initialize-TarRecordFile -Context $Context -Name $Name }
 }
 

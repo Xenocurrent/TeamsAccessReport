@@ -219,6 +219,56 @@ Describe 'Get-TarDriftCause' {
         $r = New-EeeuRow @Row
         InModuleScope TeamsAccessReport -Parameters @{ site = $s; row = $r } { Get-TarDriftCause -Site $site -Row $row | Should -Be '' }
     }
+    It 'explains a <Scope> with broken inheritance that still grants the root Members group' -ForEach @(@{ Scope = 'List' }, @{ Scope = 'Item' }) {
+        $r = New-EeeuRow -Scope $Scope -AssociatedGroup ''
+        $r | Add-Member ExpansionPath 'SPGroup:A Members'
+        InModuleScope TeamsAccessReport -Parameters @{ site = $script:pub; row = $r } { Get-TarDriftCause -Site $site -Row $row -MembersGroupTitle 'A Members' | Should -Be 'PublicTeamDefault' }
+    }
+    It 'does not explain a copied grant through <Name>' -ForEach @(
+        @{ Name = 'another group'; Path = 'SPGroup:Custom'; Site = $null }
+        @{ Name = 'a nested path'; Path = 'SPGroup:A Members > SecurityGroup:x'; Site = $null }
+        @{ Name = 'a private team'; Path = 'SPGroup:A Members'; Site = @{ Url = 'https://t/sites/a'; Kind = 'TeamSite'; Visibility = 'private' } }
+    ) {
+        $s = if ($Site) { $Site } else { $script:pub }
+        $r = New-EeeuRow -Scope Item -AssociatedGroup ''
+        $r | Add-Member ExpansionPath $Path
+        InModuleScope TeamsAccessReport -Parameters @{ site = $s; row = $r } { Get-TarDriftCause -Site $site -Row $row -MembersGroupTitle 'A Members' | Should -Be '' }
+    }
+}
+
+Describe 'Get-TarSiteDrift PublicTeamDefault on copied ACLs' {
+    It 'labels web, list and item EEEU rows that come through the root Members group' {
+        $site = @{ Url = 'https://t/sites/a'; Kind = 'TeamSite'; Visibility = 'public'; Label = 'A' }
+        $rows = foreach ($sc in 'Web', 'List', 'Item') {
+            [pscustomobject]@{ SiteUrl = 'https://t/sites/a'; WebUrl = 'https://t/sites/a'; Scope = $sc; ObjectPath = $sc; Roles = 'Edit'; LimitedAccessOnly = 'False'
+                AssociatedGroup = $(if ($sc -eq 'Web') { 'Member' } else { '' }); Kind = 'BroadGrant'; UserId = '*'; Upn = 'EveryoneExceptExternalUsers'
+                DisplayName = 'Everyone except external users'; UserType = ''; ExpansionPath = 'SPGroup:A Members' }
+        }
+        $d = @(InModuleScope TeamsAccessReport -Parameters @{ site = $site; rows = @($rows) } { Get-TarSiteDrift -Site $site -TeamsUsers @() -SiteRows $rows })
+        $d.Count | Should -Be 3
+        @($d | Where-Object Cause -eq 'PublicTeamDefault').Count | Should -Be 3
+        @($d | Where-Object Severity -ne 'High').Count | Should -Be 0 -Because 'a cause never lowers severity'
+    }
+}
+
+Describe 'Sharing-link principals' {
+    It '<Title> has no Upn (the group title is not a user)' -ForEach @(@{ Title = 'SharingLinks.a.OrganizationEdit.b' }, @{ Title = 'SharingLinks.a.AnonymousView.b' }) {
+        InModuleScope TeamsAccessReport -Parameters @{ t = $Title } {
+            $r = @(Resolve-TarSpPrincipal -Context ([pscustomobject]@{ GraphBase = 'g' }) -Cache (New-TarResolverCache) -Login $t -Title $t)
+            $r[0].Upn | Should -BeNullOrEmpty; $r[0].DisplayName | Should -Be $t
+        }
+    }
+}
+
+Describe 'Test-TarSignInCancelled' {
+    It '<Name> -> <Expected>' -ForEach @(
+        @{ Name = 'Azure.Identity text'; Ex = [Exception]::new('InteractiveBrowserCredential authentication failed: User canceled authentication.'); Expected = $true }
+        @{ Name = 'wrapped MSAL error code'; Ex = [Exception]::new('outer', [Exception]::new('authentication_canceled: closed')); Expected = $true }
+        @{ Name = 'insufficient privileges'; Ex = [Exception]::new('Insufficient privileges to complete the operation.'); Expected = $false }
+        @{ Name = 'null'; Ex = $null; Expected = $false }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ ex = $Ex; expected = $Expected } { Test-TarSignInCancelled -Exception $ex | Should -Be $expected }
+    }
 }
 
 Describe 'Selection.json round trip' {
@@ -1027,6 +1077,15 @@ Describe 'New-TeamsAccessReportApp (batch)' {
         Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $false }
         $r = New-TeamsAccessReportApp -Confirm:$false -InformationAction SilentlyContinue
         $r.Status | Should -Be 'Failed'; $r.Error | Should -Match 'Pass -Tenant'
+    }
+    It 'a closed or cancelled sign-in window is Cancelled, not Failed' {
+        Mock -ModuleName TeamsAccessReport Connect-MgGraph { throw 'InteractiveBrowserCredential authentication failed: User canceled authentication.' }
+        Mock -ModuleName TeamsAccessReport Test-TarCanPrompt { $true }
+        $r = New-TeamsAccessReportApp -InformationAction SilentlyContinue -WarningAction SilentlyContinue
+        $r.Status | Should -Be 'Cancelled'; $r.Error | Should -Match 'run the command again'
+        Should -Invoke -ModuleName TeamsAccessReport Write-TarLog -ParameterFilter { $Message -match '0 failed, 1 cancelled' } -Times 1 -Exactly
+        Should -Invoke -ModuleName TeamsAccessReport Write-TarLog -ParameterFilter { $Message -match '^\[sign-in\]' } -Times 1 -Exactly
+        Should -Invoke -ModuleName TeamsAccessReport Disconnect-MgGraph -Times 0 -Exactly
     }
     It '-WhatIf creates nothing' {
         (New-TeamsAccessReportApp -Tenant alpha -WhatIf -InformationAction SilentlyContinue).Status | Should -Be 'Skipped'
