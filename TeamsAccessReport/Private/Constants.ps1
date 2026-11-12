@@ -8,6 +8,7 @@ $script:TarFile = @{
     IncomingChannels   = 'IncomingSharedChannels.csv'
     SpAssignments      = 'SPAssignments.csv'
     SpGroupMembers     = 'SPGroupMembers.csv'
+    SharingLinks       = 'SharingLinks.csv'
     EffectiveSpAccess  = 'EffectiveSharePointAccess.csv'
     Drift              = 'DriftReport.csv'
     ExternalAssoc      = 'ExternalAssociations.csv'
@@ -27,6 +28,7 @@ $script:TarColumns = @{
     $script:TarFile.IncomingChannels  = @('TeamId', 'TeamName', 'ChannelId', 'ChannelName', 'ChannelType', 'HostTenantId', 'CrossTenant')
     $script:TarFile.SpAssignments     = @('SiteUrl', 'WebUrl', 'Scope', 'ObjectPath', 'ListTitle', 'ItemId', 'PrincipalType', 'PrincipalTitle', 'PrincipalLogin', 'PrincipalEmail', 'Roles', 'LimitedAccessOnly', 'AssociatedGroup')
     $script:TarFile.SpGroupMembers    = @('SiteUrl', 'GroupTitle', 'MemberTitle', 'MemberLogin', 'MemberEmail', 'MemberPrincipalType')
+    $script:TarFile.SharingLinks      = @('SiteUrl', 'WebUrl', 'ListTitle', 'ItemId', 'ObjectPath', 'LinkGroup', 'ShareId', 'LinkKind', 'Access', 'Url', 'Created', 'CreatedBy', 'LastModified', 'LastModifiedBy', 'Expiration', 'RequiresPassword', 'BlocksDownload', 'HasExternalGuestInvitees', 'Recipients')
     $script:TarFile.EffectiveSpAccess = @('SiteUrl', 'WebUrl', 'Scope', 'ObjectPath', 'ListTitle', 'ItemId', 'Roles', 'LimitedAccessOnly', 'AssociatedGroup', 'Kind', 'UserId', 'Upn', 'DisplayName', 'UserType', 'ExpansionPath')
     $script:TarFile.Drift             = @('SiteUrl', 'Site', 'SiteKind', 'Finding', 'Severity', 'Cause', 'UserId', 'Upn', 'DisplayName', 'Scope', 'ObjectPath', 'Roles', 'ExpansionPath')
     $script:TarFile.ExternalAssoc     = @('UserId', 'HostTenantId', 'HostTeamId', 'HostTeamName')
@@ -76,6 +78,9 @@ $script:TarCause = @{
 }
 
 $script:TarRetryableStatus = @(429, 500, 502, 503, 504)
+# SharePoint SharingLinkKind (CSOM enum Microsoft.SharePoint.Client.SharingLinkKind, values 0-6).
+$script:TarSharingLinkKind = @{ 0 = 'Uninitialized'; 1 = 'Direct'; 2 = 'OrganizationView'; 3 = 'OrganizationEdit'; 4 = 'AnonymousView'; 5 = 'AnonymousEdit'; 6 = 'Flexible' }
+$script:TarEmptyGuid = '00000000-0000-0000-0000-000000000000'
 # SharePoint returns role names in the site's language. These are data values, not UI text:
 # 'Limited Access' / 'Web-Only Limited Access' (English) and the Swedish 'Limited Access'. Add the names for every
 # site language you scan (the Swedish name of 'Web-Only Limited Access' is not verified, so it is not listed).

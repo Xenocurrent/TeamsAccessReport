@@ -180,7 +180,7 @@
         Initialize-TarRecordFile -Context $ctx -Name $script:TarFile.Teams, $script:TarFile.TeamsAccess, $script:TarFile.Channels, $script:TarFile.IncomingChannels
         if ($IncludeSharePoint) {
             Start-TarSharePointScan -Context $ctx -ClientId $spClientId
-            Initialize-TarRecordFile -Context $ctx -Name $script:TarFile.SpAssignments, $script:TarFile.SpGroupMembers
+            Initialize-TarRecordFile -Context $ctx -Name $script:TarFile.SpAssignments, $script:TarFile.SpGroupMembers, $script:TarFile.SharingLinks
             Invoke-TarPrincipalResolution -Context $ctx
             Invoke-TarDriftAnalysis -Context $ctx
         }

@@ -310,6 +310,68 @@ Describe 'Get-TarDualIdentityDrift' {
     }
 }
 
+Describe 'ConvertTo-TarSharingLinkRecord' {
+    BeforeAll {
+        function New-Link { param($ShareId = 's1', $Url = 'https://t/u', $Kind = 3, [switch]$Edit, [switch]$Review, $Members = @(), $Invitations = @())
+            [pscustomobject]@{ linkDetails = [pscustomobject]@{ ShareId = $ShareId; Url = $Url; LinkKind = $Kind; IsEditLink = [bool]$Edit; IsReviewLink = [bool]$Review
+                    Created = '2026-01-01T00:00:00Z'; CreatedBy = [pscustomobject]@{ name = 'Bo' }; Expiration = ''; Invitations = $Invitations }; linkMembers = $Members } }
+        function New-Info { param([object[]]$Links) [pscustomobject]@{ permissionsInformation = [pscustomobject]@{ links = $Links } } }
+    }
+    It 'maps LinkKind <Kind> to <Name>' -ForEach @(
+        @{ Kind = 1; Name = 'Direct' }, @{ Kind = 2; Name = 'OrganizationView' }, @{ Kind = 3; Name = 'OrganizationEdit' }
+        @{ Kind = 4; Name = 'AnonymousView' }, @{ Kind = 5; Name = 'AnonymousEdit' }, @{ Kind = 6; Name = 'Flexible' }, @{ Kind = 42; Name = 'Unknown(42)' }
+    ) {
+        $info = New-Info @(New-Link -Kind $Kind)
+        $r = @(InModuleScope TeamsAccessReport -Parameters @{ i = $info } { ConvertTo-TarSharingLinkRecord -SharingInformation $i -SiteUrl 's' -WebUrl 'w' })
+        $r[0].LinkKind | Should -Be $Name
+    }
+    It 'derives Access, CreatedBy fallback to name, recipients from members and invitations, and the LinkGroup by ShareId' {
+        $link = New-Link -ShareId 'abc' -Edit -Members @([pscustomobject]@{ email = 'b@x.se' }, [pscustomobject]@{ name = 'A Person' }) -Invitations @([pscustomobject]@{ invitee = [pscustomobject]@{ email = 'B@x.se' } }, [pscustomobject]@{ invitee = [pscustomobject]@{ email = 'c@y.se' } })
+        $r = @(InModuleScope TeamsAccessReport -Parameters @{ i = (New-Info @($link)) } { ConvertTo-TarSharingLinkRecord -SharingInformation $i -SiteUrl 's' -WebUrl 'w' -ObjectPath '/f' -LinkGroupTitles 'SharingLinks.u.OrganizationEdit.zzz', 'SharingLinks.u.Flexible.abc' })
+        $r.Count | Should -Be 1
+        $r[0].Access | Should -Be 'Edit'; $r[0].CreatedBy | Should -Be 'Bo'
+        $r[0].Recipients | Should -Be 'A Person;b@x.se;c@y.se'
+        $r[0].LinkGroup | Should -Be 'SharingLinks.u.Flexible.abc'
+        @($r[0].PSObject.Properties.Name) | Should -Be (InModuleScope TeamsAccessReport { $script:TarColumns[$script:TarFile.SharingLinks] })
+    }
+    It 'Review access and an unmatched ShareId leave LinkGroup empty' {
+        $r = @(InModuleScope TeamsAccessReport -Parameters @{ i = (New-Info @(New-Link -Review)) } { ConvertTo-TarSharingLinkRecord -SharingInformation $i -SiteUrl 's' -WebUrl 'w' -LinkGroupTitles 'SharingLinks.u.X.other' })
+        $r[0].Access | Should -Be 'Review'; $r[0].LinkGroup | Should -BeNullOrEmpty
+    }
+    It 'skips placeholders and tolerates odata=verbose, empty and null responses' {
+        $verbose = [pscustomobject]@{ permissionsInformation = [pscustomobject]@{ links = [pscustomobject]@{ results = @((New-Link -ShareId '00000000-0000-0000-0000-000000000000' -Url $null), (New-Link -ShareId 'k')) } } }
+        @(InModuleScope TeamsAccessReport -Parameters @{ i = $verbose } { ConvertTo-TarSharingLinkRecord -SharingInformation $i -SiteUrl 's' -WebUrl 'w' }).Count | Should -Be 1
+        @(InModuleScope TeamsAccessReport { ConvertTo-TarSharingLinkRecord -SharingInformation ([pscustomobject]@{}) -SiteUrl 's' -WebUrl 'w' }).Count | Should -Be 0
+        @(InModuleScope TeamsAccessReport { ConvertTo-TarSharingLinkRecord -SharingInformation $null -SiteUrl 's' -WebUrl 'w' }).Count | Should -Be 0
+    }
+}
+
+Describe 'ConvertTo-TarSpDateText' {
+    It 'formats <Name> as ISO 8601 UTC' -ForEach @(
+        @{ Name = 'a UTC DateTime'; V = [datetime]::SpecifyKind([datetime]'2026-12-31T08:09:10', 'Utc'); E = '2026-12-31T08:09:10Z' }
+        @{ Name = 'a DateTimeOffset'; V = [datetimeoffset]'2026-12-31T10:09:10+02:00'; E = '2026-12-31T08:09:10Z' }
+        @{ Name = 'a string'; V = '2026-12-31T08:09:10Z'; E = '2026-12-31T08:09:10Z' }
+        @{ Name = 'an empty string'; V = ''; E = '' }
+        @{ Name = 'null'; V = $null; E = '' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ v = $V; e = $E } { ConvertTo-TarSpDateText $v | Should -BeExactly $e }
+    }
+}
+
+Describe 'Get-TarSpItemSharingLink' {
+    It 'records a failure in Errors.csv and returns nothing instead of failing the list' {
+        InModuleScope TeamsAccessReport {
+            Mock Invoke-TarSpRequest { throw 'Simulated (403) Forbidden' }
+            Mock Write-TarLog { }
+            Mock Add-TarErrorRecord { }
+            $r = @(Get-TarSpItemSharingLink -Context ([pscustomobject]@{ MaxRetries = 1 }) -Connection 'c' -ListUrl 'l' -SiteUrl 's' -WebUrl 'w' -ItemId '7' -ObjectPath '/f')
+            $r.Count | Should -Be 0
+            Should -Invoke Add-TarErrorRecord -Times 1 -Exactly -ParameterFilter { $Stage -eq 'SPSharingLinks' -and $Target -eq 'w :: /f' }
+            Should -Invoke Write-TarLog -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' }
+        }
+    }
+}
+
 Describe 'Test-TarSignInCancelled' {
     It '<Name> -> <Expected>' -ForEach @(
         @{ Name = 'Azure.Identity text'; Ex = [Exception]::new('InteractiveBrowserCredential authentication failed: User canceled authentication.'); Expected = $true }

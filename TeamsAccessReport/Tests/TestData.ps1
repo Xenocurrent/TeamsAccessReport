@@ -96,6 +96,11 @@ function Get-TestSpResponse {
             if ($Url -notmatch 'skiptoken') { return [pscustomobject]@{ value = @([pscustomobject]@{ Id = 1; FileRef = '/a.docx'; HasUniqueRoleAssignments = $false }, [pscustomobject]@{ Id = 2; FileRef = '/secret.xlsx'; HasUniqueRoleAssignments = $true }); 'odata.nextLink' = "$site/_api/web/lists(guid'L1')/items?`$select=Id,FileRef&`$skiptoken=2" } }
             return J '{"value":[{"Id":3,"FileRef":"/c.docx","HasUniqueRoleAssignments":false}]}'
         }
+        # GetSharingInformation (POST): one real anonymous link (ShareId matches the item's SharingLinks group) and one
+        # never-created placeholder (empty GUID, no Url) that must be skipped.
+        'items\(2\)/GetSharingInformation' {
+            return J '{"permissionsInformation":{"links":[{"isInherited":false,"linkDetails":{"ShareId":"xyz","Url":"https://contoso.sharepoint.com/:x:/s/Finance/EXYZ","LinkKind":4,"IsEditLink":false,"IsReviewLink":false,"Created":"2026-01-02T03:04:05Z","CreatedBy":{"email":"anna@contoso.se","name":"Anna"},"LastModified":"2026-01-02T03:04:05Z","LastModifiedBy":{"email":"anna@contoso.se"},"Expiration":"2026-12-31T00:00:00Z","RequiresPassword":true,"BlocksDownload":false,"HasExternalGuestInvitees":false,"Invitations":[]},"linkMembers":[]},{"isInherited":false,"linkDetails":{"ShareId":"00000000-0000-0000-0000-000000000000","Url":null,"LinkKind":3,"IsEditLink":true,"Invitations":[]},"linkMembers":[]}]}}'
+        }
         'items\(2\)/roleassignments' { return [pscustomobject]@{ value = @((Get-SpRa 'SharingLinks.abc.AnonymousView.xyz' 'SharingLinks.abc.AnonymousView.xyz' 8 'Read'), (Get-SpRa 'Unknown' 'i:0#.f|membership|ghost@contoso.se' 1 'Contribute')) } }
         '/Archive/_api/web/webs' { return J '{"value":[]}' }
         '_api/web/webs' { if ($name -eq 'Finance') { return J "{`"value`":[{`"Url`":`"$site/Archive`"}]}" } return J '{"value":[]}' }
