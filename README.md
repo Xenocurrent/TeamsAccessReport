@@ -14,11 +14,18 @@ Full documentation: [TeamsAccessReport/README.md](TeamsAccessReport/README.md) Â
 Requires PowerShell 7.2+ (7.4.6+ and PnP.PowerShell 3.0+ for the SharePoint scan), Microsoft.Graph.Authentication.
 
 ```powershell
-Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
+# First time: clone (any folder)
+git clone https://github.com/Xenocurrent/TeamsAccessReport.git C:\Tools\TeamsAccessReport
+
+# Every session: update and (re)load - -Force replaces an already loaded older version
+cd C:\Tools\TeamsAccessReport; git pull; Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1 -Force
 New-TeamsAccessReportApp                              # once per tenant: sign in as admin, confirm
 Invoke-TeamsAccessReport -ProfileName <profile>       # or without parameters: start window (Windows)
-./TeamsAccessReport/build.ps1                         # PSScriptAnalyzer + Pester + coverage (same as CI)
 ```
+
+Replace `C:\Tools\TeamsAccessReport` with your clone folder. Run `git pull` before each session so new versions
+(see the [CHANGELOG](TeamsAccessReport/CHANGELOG.md)) are picked up; `-Force` matters when the module is already loaded.
+Developers: `./TeamsAccessReport/build.ps1` runs PSScriptAnalyzer + Pester + coverage (same as CI).
 
 Output is one folder per run with CSV files, `Summary.json` and `run.jsonl`. It contains personal data and, in
 `SharingLinks.csv`, working links â€“ store it like credentials.

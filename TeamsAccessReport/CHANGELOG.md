@@ -1,5 +1,11 @@
 ﻿# Changelog
 
+## 2.8.2 – 2026-11-12
+### Documentation
+- Both READMEs: "Getting and updating" with `git clone` (first time) and the per-session one-liner
+  `cd <clone>; git pull; Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1 -Force`, plus how to check the
+  loaded version.
+
 ## 2.8.1 – 2026-11-12
 ### Documentation
 - README brought up to date with 2.5–2.8: requirements (PowerShell 7.2+/7.4.6+ for the worker, PnP.PowerShell 3.0+,
