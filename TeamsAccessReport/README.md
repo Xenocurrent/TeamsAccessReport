@@ -9,10 +9,21 @@ and SharePoint (broad grants, organization/anonymous links, access outside the t
 Microsoft.Graph.Authentication, and PnP.PowerShell for `-IncludeSharePoint`. Read-only against the tenant; verified in a
 real tenant app-only (4 teams, 4 sites, item-level permissions).
 
+## Getting and updating
+
 ```powershell
-Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1
-Invoke-TeamsAccessReport            # Windows: one window for connection + options, then pop-ups only
+# First time: clone (any folder)
+git clone https://github.com/Xenocurrent/TeamsAccessReport.git C:\Tools\TeamsAccessReport
+
+# Every session: update and (re)load - -Force replaces an already loaded older version
+cd C:\Tools\TeamsAccessReport; git pull; Import-Module ./TeamsAccessReport/TeamsAccessReport.psd1 -Force
+New-TeamsAccessReportApp                              # once per tenant: sign in as admin, confirm
+Invoke-TeamsAccessReport -ProfileName <profile>       # or without parameters: start window (Windows)
 ```
+
+Replace `C:\Tools\TeamsAccessReport` with your clone folder. `git pull` fetches the latest version;
+`Import-Module -Force` loads it even if an older version is already loaded in the session. Check the loaded version with
+`(Get-Module TeamsAccessReport).Version` and what changed in the [CHANGELOG](CHANGELOG.md).
 
 ## Setting up a tenant (once per tenant)
 
