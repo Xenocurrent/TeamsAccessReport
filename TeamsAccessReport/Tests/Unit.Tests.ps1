@@ -260,6 +260,56 @@ Describe 'Sharing-link principals' {
     }
 }
 
+Describe 'ConvertTo-TarNameKey' {
+    It '<In> -> <Out>' -ForEach @(
+        @{ In = 'Gisela Zinn'; Out = 'gisela zinn' }
+        @{ In = 'gisela.zinn'; Out = 'gisela zinn' }
+        @{ In = '  Gísela   ZINN '; Out = 'gisela zinn' }
+        @{ In = 'Anna-Karin_Öst'; Out = 'anna karin ost' }
+        @{ In = 'admin'; Out = '' }
+        @{ In = ''; Out = '' }
+        @{ In = $null; Out = '' }
+    ) {
+        InModuleScope TeamsAccessReport -Parameters @{ i = $In; o = $Out } { ConvertTo-TarNameKey $i | Should -BeExactly $o }
+    }
+}
+
+Describe 'Get-TarDualIdentityDrift' {
+    BeforeAll {
+        $script:site = @{ Url = 'https://t/sites/a'; Kind = 'TeamSite'; Label = 'A' }
+        function TeamRow { param($Id, $Name, $Email, $Role = 'Member') [pscustomobject]@{ UserId = $Id; DisplayName = $Name; Email = $Email; Role = $Role; Scope = 'Team' } }
+        function SpRow { param($Id, $Name, $Upn, $UserType = 'Member', $Scope = 'Web') [pscustomobject]@{ UserId = $Id; DisplayName = $Name; Upn = $Upn; UserType = $UserType; Scope = $Scope; Roles = 'Edit' } }
+    }
+    It 'flags a guest whose name matches an internal account on the same site' {
+        $teams = @((TeamRow 'i1' 'Gisela Zinn' 'gisela.zinn@contoso.se' 'Owner'), (TeamRow 'g1' 'Gisela Zinn' 'gisela@other.se' 'Guest'))
+        $sp = @((SpRow 'g1' 'Gisela Zinn' 'gisela_other.se#EXT#@contoso.onmicrosoft.com' 'Guest'))
+        $d = @(InModuleScope TeamsAccessReport -Parameters @{ s = $script:site; t = $teams; p = $sp } { Get-TarDualIdentityDrift -Site $s -TeamsUsers $t -SpUsers $p })
+        $d.Count | Should -Be 1
+        $d[0].Finding | Should -Be 'InternalUserAlsoGuest'; $d[0].Severity | Should -Be 'Medium'
+        $d[0].UserId | Should -Be 'g1'; $d[0].Upn | Should -Match '#EXT#'
+        $d[0].Scope | Should -Be 'SharePoint:Web;Teams:Team'; $d[0].Roles | Should -Be 'Edit;Guest'
+        $d[0].ExpansionPath | Should -Be 'NameMatch > Internal:gisela.zinn@contoso.se (i1)'
+    }
+    It 'matches across sources (guest only in SharePoint, internal only in Teams) and dotted guest names' {
+        $d = @(InModuleScope TeamsAccessReport -Parameters @{ s = $script:site; t = @((TeamRow 'i1' 'Ismail Shah' 'ismail@contoso.se')); p = @((SpRow 'g1' 'ismail.shah' 'ismail.shah_x.se#EXT#@contoso.onmicrosoft.com')) } { Get-TarDualIdentityDrift -Site $s -TeamsUsers $t -SpUsers $p })
+        $d.Count | Should -Be 1; $d[0].UserId | Should -Be 'g1'
+    }
+    It 'does not flag <Name>' -ForEach @(
+        @{ Name = 'guests without an internal namesake'; T = @(@{ Id = 'i1'; N = 'Anna Berg'; R = 'Member' }, @{ Id = 'g1'; N = 'Bo Ek'; R = 'Guest' }) }
+        @{ Name = 'single-word names'; T = @(@{ Id = 'i1'; N = 'Reception'; R = 'Member' }, @{ Id = 'g1'; N = 'reception'; R = 'Guest' }) }
+        @{ Name = 'two internal namesakes'; T = @(@{ Id = 'i1'; N = 'Anna Berg'; R = 'Member' }, @{ Id = 'i2'; N = 'Anna Berg'; R = 'Owner' }) }
+        @{ Name = 'two guest namesakes'; T = @(@{ Id = 'g1'; N = 'Anna Berg'; R = 'Guest' }, @{ Id = 'g2'; N = 'Anna Berg'; R = 'Guest' }) }
+    ) {
+        $teams = @($T | ForEach-Object { TeamRow $_.Id $_.N "$($_.Id)@x" $_.R })
+        @(InModuleScope TeamsAccessReport -Parameters @{ s = $script:site; t = $teams } { Get-TarDualIdentityDrift -Site $s -TeamsUsers $t -SpUsers @() }).Count | Should -Be 0
+    }
+    It 'tolerates minimal Teams rows (strict mode) and names every internal namesake' {
+        $teams = @([pscustomobject]@{ UserId = 'u1' }, (TeamRow 'i2' 'Anna Berg' 'b@c'), (TeamRow 'i1' 'Anna Berg' 'a@c'), (TeamRow 'g1' 'Anna Berg' 'a@x' 'Guest'))
+        $d = @(InModuleScope TeamsAccessReport -Parameters @{ s = $script:site; t = $teams } { Get-TarDualIdentityDrift -Site $s -TeamsUsers $t -SpUsers @() })
+        $d.Count | Should -Be 1; $d[0].ExpansionPath | Should -Be 'NameMatch > Internal:a@c (i1) | Internal:b@c (i2)'
+    }
+}
+
 Describe 'Test-TarSignInCancelled' {
     It '<Name> -> <Expected>' -ForEach @(
         @{ Name = 'Azure.Identity text'; Ex = [Exception]::new('InteractiveBrowserCredential authentication failed: User canceled authentication.'); Expected = $true }

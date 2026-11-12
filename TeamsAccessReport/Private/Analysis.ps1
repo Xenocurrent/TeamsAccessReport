@@ -48,6 +48,62 @@ function Get-TarDriftCause {
     if ($isDefault) { $script:TarCause.PublicTeamDefault } else { '' }
 }
 
+function ConvertTo-TarNameKey {
+    # Pure function: comparison key for a display name. Case, diacritics and the separators . _ - and whitespace are
+    # ignored, so 'Gisela Zinn', 'gisela.zinn' and 'Gísela  Zinn' share a key. Fewer than two words returns '' (too
+    # generic to match on: 'admin', 'test').
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    $decomposed = $Name.Normalize([Text.NormalizationForm]::FormD)
+    $plain = -join @($decomposed.ToCharArray() | Where-Object { [Globalization.CharUnicodeInfo]::GetUnicodeCategory($_) -ne [Globalization.UnicodeCategory]::NonSpacingMark })
+    $words = @($plain.ToLowerInvariant() -split '[\s._-]+' | Where-Object { $_ })
+    if ($words.Count -lt 2) { return '' }
+    $words -join ' '
+}
+
+function Get-TarDualIdentityDrift {
+    # Pure function: guests whose display name matches an internal account with access to the SAME site or team.
+    # Typical cause: one person with an internal account and an old or parallel guest account (offboarding and
+    # Conditional Access then only cover one of them). A name match is a lead, not proof, so severity is Medium and
+    # the internal counterpart is named in ExpansionPath for manual verification.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Site, [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$TeamsUsers,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SpUsers)
+    $ids = @{}
+    foreach ($t in $TeamsUsers) {
+        $id = [string](Get-TarProperty $t 'UserId'); if (-not $id) { continue }
+        $upn = [string](Get-TarProperty $t 'Email')
+        $guest = (Get-TarProperty $t 'Role') -eq 'Guest' -or (Test-TarGuestPrincipal -Upn $upn)
+        if (-not $ids.ContainsKey($id)) { $ids[$id] = @{ Id = $id; Name = [string](Get-TarProperty $t 'DisplayName'); Upn = $upn; Guest = $guest; Scopes = [Collections.Generic.SortedSet[string]]::new(); Roles = [Collections.Generic.SortedSet[string]]::new() } }
+        $e = $ids[$id]; $e.Guest = $e.Guest -or $guest
+        $null = $e.Scopes.Add("Teams:$(Get-TarProperty $t 'Scope')"); $r = [string](Get-TarProperty $t 'Role'); if ($r) { $null = $e.Roles.Add($r) }
+    }
+    foreach ($u in $SpUsers) {
+        $id = [string](Get-TarProperty $u 'UserId'); if (-not $id) { continue }
+        $upn = [string](Get-TarProperty $u 'Upn')
+        $guest = Test-TarGuestPrincipal -UserType ([string](Get-TarProperty $u 'UserType')) -Upn $upn
+        if (-not $ids.ContainsKey($id)) { $ids[$id] = @{ Id = $id; Name = [string](Get-TarProperty $u 'DisplayName'); Upn = $upn; Guest = $guest; Scopes = [Collections.Generic.SortedSet[string]]::new(); Roles = [Collections.Generic.SortedSet[string]]::new() } }
+        $e = $ids[$id]; $e.Guest = $e.Guest -or $guest
+        if (-not $e.Upn -or $upn -match '#EXT#') { $e.Upn = $upn }
+        $null = $e.Scopes.Add("SharePoint:$(Get-TarProperty $u 'Scope')"); $r = [string](Get-TarProperty $u 'Roles'); if ($r) { $null = $e.Roles.Add($r) }
+    }
+    $internalByKey = @{}
+    foreach ($e in ($ids.Values | Where-Object { -not $_.Guest })) {
+        $k = ConvertTo-TarNameKey $e.Name; if (-not $k) { continue }
+        if (-not $internalByKey.ContainsKey($k)) { $internalByKey[$k] = [Collections.Generic.List[object]]::new() }
+        $internalByKey[$k].Add($e)
+    }
+    foreach ($g in ($ids.Values | Where-Object { $_.Guest } | Sort-Object { $_.Id })) {
+        $k = ConvertTo-TarNameKey $g.Name
+        if (-not $k -or -not $internalByKey.ContainsKey($k)) { continue }
+        $twins = (@($internalByKey[$k] | Sort-Object { $_.Id } | ForEach-Object { "Internal:$($_.Upn) ($($_.Id))" })) -join ' | '
+        New-TarDriftRecord -Site $Site -Finding $script:TarFinding.InternalAlsoGuest -Severity Medium -UserId $g.Id -Upn $g.Upn -DisplayName $g.Name `
+            -Scope (@($g.Scopes) -join ';') -ObjectPath $Site.Url -Roles (@($g.Roles) -join ';') -ExpansionPath "NameMatch > $twins"
+    }
+}
+
 function Get-TarSiteDrift {
     # Pure function: compares expected (Teams) with actual (SharePoint) access for ONE site.
     [CmdletBinding()]
@@ -84,6 +140,7 @@ function Get-TarSiteDrift {
             New-TarDriftRecord -Site $Site -Finding $script:TarFinding.TeamsNotInSp -Severity Info -UserId $tr.UserId -Upn $tr.Email -DisplayName $tr.DisplayName -Scope $tr.Scope -ObjectPath $Site.Url -Roles $tr.Role -ExpansionPath "Teams:$($tr.AccessPath)"
         }
     }
+    Get-TarDualIdentityDrift -Site $Site -TeamsUsers $TeamsUsers -SpUsers $spUsers
     foreach ($u in ($real | Where-Object Kind -eq 'Unresolved')) {
         New-TarDriftRecord -Site $Site -Finding $script:TarFinding.Unresolved -Severity Medium -Upn $u.Upn -DisplayName $u.DisplayName -Scope $u.Scope -ObjectPath $u.ObjectPath -Roles $u.Roles -ExpansionPath $u.ExpansionPath
     }

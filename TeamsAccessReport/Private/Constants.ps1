@@ -66,6 +66,7 @@ $script:TarFinding = @{
     ItemNotInTeams      = 'ItemOrListAccessNotInTeams'
     TeamsNotInSp        = 'InTeamsNotInSharePoint'
     Unresolved          = 'UnresolvedPrincipal'
+    InternalAlsoGuest   = 'InternalUserAlsoGuest'
 }
 
 # Known by-design explanations for a drift finding. Empty Cause = no known default explains it.
