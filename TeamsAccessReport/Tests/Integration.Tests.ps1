@@ -71,7 +71,8 @@ Describe 'Full run (app-only, SharePoint, external associations)' {
         @{ Finding = 'SiteCollectionAdminNotInTeams'; Upn = 'ghost@contoso.se'; Severity = 'Medium' }
         @{ Finding = 'SiteAccessNotInTeams'; Upn = 'bo@contoso.se'; Severity = 'Medium' }
     ) {
-        @($drift | Where-Object { $_.Finding -eq $Finding -and $_.Upn -eq $Upn -and $_.Severity -eq $Severity }).Count | Should -BeGreaterOrEqual 1
+        # Sharing links are identified by DisplayName (group title); their Upn is empty because they are not users.
+        @($drift | Where-Object { $_.Finding -eq $Finding -and ($_.Upn -eq $Upn -or ($Finding -like '*Link' -and -not $_.Upn -and $_.DisplayName -eq $Upn)) -and $_.Severity -eq $Severity }).Count | Should -BeGreaterOrEqual 1
     }
     It 'does not flag team members on the team site' {
         @($drift | Where-Object { $_.SiteKind -eq 'TeamSite' -and $_.Upn -in 'anna@contoso.se', 'bo@contoso.se' }).Count | Should -Be 0

@@ -17,7 +17,7 @@ Invoke-TeamsAccessReport            # Windows: one window for connection + optio
 New-TeamsAccessReportApp                                      # one tenant: taken from the admin sign-in, you confirm
 New-TeamsAccessReportApp -Tenant contoso                      # one tenant, named explicitly
 Import-Csv .\tenants.csv | New-TeamsAccessReportApp |          # many tenants: CSV with Tenant[,ProfileName]
-    Export-Csv .\setup-results.csv -NoTypeInformation
+    Export-Csv .\setup-results.csv
 ```
 
 Per tenant you sign in once as an admin in the browser; then the command

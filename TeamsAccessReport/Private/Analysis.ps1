@@ -31,14 +31,20 @@ function Get-TarSiteMap {
 function Get-TarDriftCause {
     # Pure function: returns a known by-design explanation for a broad grant, or '' when none applies.
     # PublicTeamDefault requires every condition, so a manually added grant is never explained away.
+    # MembersGroupTitle: title of the root web's associated Members group (from the Web-scope row tagged 'Member').
+    # A list or item with broken inheritance keeps a copy of the parent's role assignments, so EEEU reaching it
+    # directly through that same group is the same default, not a new grant.
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)][hashtable]$Site, [Parameter(Mandatory)]$Row)
+    param([Parameter(Mandatory)][hashtable]$Site, [Parameter(Mandatory)]$Row, [AllowEmptyCollection()][string[]]$MembersGroupTitle = @())
     $siteIsPublicTeam = $Site.Kind -eq 'TeamSite' -and $Site.Visibility -eq 'public'
     $rowIsEeeu = $Row.Kind -eq 'BroadGrant' -and $Row.Upn -eq 'EveryoneExceptExternalUsers'
     # Get-TarProperty: rows from older or partial producers may lack AssociatedGroup/WebUrl (strict mode).
-    $viaRootMembers = $Row.Scope -eq 'Web' -and (Get-TarProperty $Row 'AssociatedGroup') -eq 'Member' -and ([string](Get-TarProperty $Row 'WebUrl')).TrimEnd('/') -eq $Site.Url
-    $isDefault = $siteIsPublicTeam -and $rowIsEeeu -and $viaRootMembers
+    $onRootWeb = ([string](Get-TarProperty $Row 'WebUrl')).TrimEnd('/') -eq $Site.Url
+    $viaRootMembers = $onRootWeb -and $Row.Scope -eq 'Web' -and (Get-TarProperty $Row 'AssociatedGroup') -eq 'Member'
+    $expansion = [string](Get-TarProperty $Row 'ExpansionPath')
+    $viaCopiedMembers = $onRootWeb -and $Row.Scope -in 'List', 'Item' -and @($MembersGroupTitle | Where-Object { $_ -and $expansion -ceq "SPGroup:$_" }).Count -gt 0
+    $isDefault = $siteIsPublicTeam -and $rowIsEeeu -and ($viaRootMembers -or $viaCopiedMembers)
     if ($isDefault) { $script:TarCause.PublicTeamDefault } else { '' }
 }
 
@@ -49,10 +55,15 @@ function Get-TarSiteDrift {
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SiteRows)
     $teamsSet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($TeamsUsers | ForEach-Object { $_.UserId }), [System.StringComparer]::OrdinalIgnoreCase)
     $real = @($SiteRows | Where-Object { $_.LimitedAccessOnly -ne 'True' })
+    $membersTitles = [System.Collections.Generic.List[string]]::new()
+    foreach ($w in $SiteRows) {
+        $rootMembers = $w.Scope -eq 'Web' -and (Get-TarProperty $w 'AssociatedGroup') -eq 'Member' -and ([string](Get-TarProperty $w 'WebUrl')).TrimEnd('/') -eq $Site.Url
+        if ($rootMembers -and [string]$w.ExpansionPath -match '^SPGroup:(.+?)(?: > |$)' -and -not $membersTitles.Contains($Matches[1])) { $membersTitles.Add($Matches[1]) }
+    }
 
     foreach ($b in ($real | Where-Object { $_.Kind -in 'BroadGrant', 'AnonymousLink', 'OrganizationLink' })) {
         New-TarDriftRecord -Site $Site -Finding $b.Kind -Severity High -UserId $b.UserId -Upn $b.Upn -DisplayName $b.DisplayName -Scope $b.Scope -ObjectPath $b.ObjectPath -Roles $b.Roles -ExpansionPath $b.ExpansionPath `
-            -Cause (Get-TarDriftCause -Site $Site -Row $b)
+            -Cause (Get-TarDriftCause -Site $Site -Row $b -MembersGroupTitle $membersTitles.ToArray())
     }
     $spUsers = @($real | Where-Object { $_.Kind -eq 'User' })
     foreach ($g in ($spUsers | Group-Object { if ($_.UserId) { $_.UserId } else { $_.Upn } })) {

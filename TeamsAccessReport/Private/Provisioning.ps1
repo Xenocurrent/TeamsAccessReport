@@ -188,3 +188,17 @@ function Get-TarSignedInOrganization {
         InitialDomain = $(if ($initial) { [string](Get-TarProperty $initial 'name') } else { $null })
     }
 }
+
+function Test-TarSignInCancelled {
+    # True when an exception (or any inner exception) is the user closing or cancelling the interactive sign-in.
+    # MSAL raises MsalClientException with ErrorCode 'authentication_canceled'; Azure.Identity wraps it in
+    # AuthenticationFailedException with the text "User canceled authentication", which is all the SDK surfaces.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowNull()][Exception]$Exception)
+    for ($e = $Exception; $e; $e = $e.InnerException) {
+        if ([string](Get-TarProperty $e 'ErrorCode') -eq 'authentication_canceled') { return $true }
+        if ($e.Message -match 'User cancell?ed authentication|authentication_canceled') { return $true }
+    }
+    $false
+}

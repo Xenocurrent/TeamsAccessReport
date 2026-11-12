@@ -38,11 +38,11 @@
     .EXAMPLE
         New-TeamsAccessReportApp -Tenant contoso
     .EXAMPLE
-        Import-Csv .\tenants.csv | New-TeamsAccessReportApp | Export-Csv .\setup-results.csv -NoTypeInformation
+        Import-Csv .\tenants.csv | New-TeamsAccessReportApp | Export-Csv .\setup-results.csv
         tenants.csv: Tenant[,ProfileName]. One browser sign-in per tenant; one result row per tenant.
     .OUTPUTS
         PSCustomObject per tenant: Tenant, Status (Ready | ConsentPending | Failed), ProfileName, ClientId,
-        CertificateThumbprint, CertificateExpires, ConsentUrl, Error. Status Cancelled when you answer No.
+        CertificateThumbprint, CertificateExpires, ConsentUrl, Error. Status Cancelled when you answer No or close the sign-in window.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
@@ -122,8 +122,16 @@
                 $next = if ($row.Status -eq 'Ready') { "Ready. New permissions can take a few minutes to apply; then run Invoke-TeamsAccessReport and pick profile '$name' in the start window." } else { "Consent incomplete - open as admin: $($r.ConsentUrl)" }
                 Write-TarLog "[$query] $next" -Level $(if ($row.Status -eq 'Ready') { 'INFO' } else { 'WARN' })
             } catch {
-                $row.Error = $_.Exception.Message
-                Write-TarLog "[$($row.Tenant)] Failed: $($row.Error)" -Level ERROR
+                $label = if ($row.Tenant) { $row.Tenant } else { 'sign-in' }
+                if (-not $connected -and (Test-TarSignInCancelled -Exception $_.Exception)) {
+                    $row.Status = 'Cancelled'
+                    $row.Error = 'Sign-in cancelled or closed. With WAM the sign-in window can open behind the terminal; run the command again.'
+                    Write-TarLog "[$label] $($row.Error)" -Level WARN
+                    $tally.Cancelled++
+                } else {
+                    $row.Error = $_.Exception.Message
+                    Write-TarLog "[$label] Failed: $($row.Error)" -Level ERROR
+                }
             } finally {
                 if ($connected) { $null = Disconnect-MgGraph -ErrorAction SilentlyContinue -WarningAction SilentlyContinue }
             }

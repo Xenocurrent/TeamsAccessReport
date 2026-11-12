@@ -1,5 +1,20 @@
 ﻿# Changelog
 
+## 2.6.1 – 2026-11-12
+### Fixed
+- PowerShell 7.7: every CSV write printed "Parameter 'NoTypeInformation' is obsolete". `-NoTypeInformation` has been
+  the default since PowerShell 6 and is now an obsolete no-op that warns (PowerShell PR #26719); it is removed from
+  the module, the worker and the README examples. Output is unchanged.
+- `PublicTeamDefault` was only set on the root-web row. A list or item with broken inheritance keeps a copy of the
+  parent's role assignments, so "Everyone except external users" reaching it directly through the root web's
+  associated Members group now gets the same Cause. A grant through any other group, a nested path, a subweb or a
+  private team still has no Cause. Severity is unchanged.
+- Sharing-link findings (`OrganizationLink`, `AnonymousLink`) put the SharePoint group title in `Upn`. `Upn` is now
+  empty for links; `DisplayName` still carries the `SharingLinks.*` title that identifies the link.
+- `New-TeamsAccessReportApp`: closing or cancelling the sign-in window (for example a WAM window hidden behind the
+  terminal) returned Status `Failed` and logged `[] Failed`. It now returns `Cancelled` with a hint and logs
+  `[sign-in]` when no tenant is known yet.
+
 ## 2.6.0 – 2026-11-09
 ### Added
 - `New-TeamsAccessReportApp` without `-Tenant`: the tenant comes from the admin sign-in. The command shows the
