@@ -83,7 +83,19 @@ Describe 'Full run (app-only, SharePoint, external associations)' {
         $fin = @($drift | Where-Object { $_.Finding -eq 'BroadGrant' -and $_.SiteUrl -like '*/Finance' })
         $fin.Count | Should -Be 1; $fin[0].Cause | Should -BeNullOrEmpty
     }
-    It '<_> header matches the column contract' -ForEach @('Teams.csv', 'TeamsAccess.csv', 'Channels.csv', 'IncomingSharedChannels.csv', 'SPAssignments.csv', 'SPGroupMembers.csv', 'EffectiveSharePointAccess.csv', 'DriftReport.csv', 'ExternalAssociations.csv', 'Errors.csv') {
+    It 'collects sharing-link details (URL, kind, creator) for items with a SharingLinks group, skipping placeholders' {
+        $links = @(Import-Csv (Join-Path $out 'SharingLinks.csv'))
+        $links.Count | Should -Be 1
+        $l = $links[0]
+        $l.ObjectPath | Should -Be '/secret.xlsx'; $l.LinkKind | Should -Be 'AnonymousView'; $l.Access | Should -Be 'View'
+        $l.Url | Should -Be 'https://contoso.sharepoint.com/:x:/s/Finance/EXYZ'; $l.CreatedBy | Should -Be 'anna@contoso.se'
+        $l.LinkGroup | Should -Be 'SharingLinks.abc.AnonymousView.xyz' -Because 'the join key to DriftReport.DisplayName'
+        $l.RequiresPassword | Should -Be 'True'; $l.Expiration | Should -Be '2026-12-31T00:00:00Z'
+        @($drift | Where-Object DisplayName -eq $l.LinkGroup).Count | Should -BeGreaterOrEqual 1
+        Should -Invoke -ModuleName TeamsAccessReport Invoke-TarSpRaw -ParameterFilter { $PesterBoundParameters['Method'] -eq 'Post' -and $Url -like '*items(2)/GetSharingInformation*' } -Times 1 -Exactly -Scope Describe
+        Should -Invoke -ModuleName TeamsAccessReport Invoke-TarSpRaw -ParameterFilter { $Url -like '*GetSharingInformation*' -and $Url -notlike '*items(2)*' } -Times 0 -Exactly -Scope Describe
+    }
+    It '<_> header matches the column contract' -ForEach @('Teams.csv', 'TeamsAccess.csv', 'Channels.csv', 'IncomingSharedChannels.csv', 'SPAssignments.csv', 'SPGroupMembers.csv', 'SharingLinks.csv', 'EffectiveSharePointAccess.csv', 'DriftReport.csv', 'ExternalAssociations.csv', 'Errors.csv') {
         $name = $_
         $expected = InModuleScope TeamsAccessReport -Parameters @{ n = $name } { $script:TarColumns[$n] }
         $actual = InModuleScope TeamsAccessReport -Parameters @{ p = (Join-Path $out $name) } { Get-TarCsvHeader -Path $p }

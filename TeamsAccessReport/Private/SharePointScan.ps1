@@ -1,21 +1,24 @@
 ﻿# Phase 2 - SharePoint scan via PnP. Runs in a separate pwsh process (Worker/Invoke-SharePointScan.ps1)
 # because PnP.PowerShell and the Microsoft Graph SDK load incompatible assemblies in the same session.
-# Invoke-TarSpRaw is the ONLY place that touches Invoke-PnPSPRestMethod (test seam).
+# Invoke-TarSpRaw is the ONLY place that touches Invoke-PnPSPRestMethod (test seam). POST is used only for
+# GetSharingInformation, which is a read operation that SharePoint exposes as POST.
 
 $script:TarSpRoleExpand = 'roleassignments?$expand=Member,RoleDefinitionBindings&$select=Member/Title,Member/LoginName,Member/Email,Member/PrincipalType,RoleDefinitionBindings/Name'
 
 function Invoke-TarSpRaw {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Connection)
+    param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Connection, [ValidateSet('Get', 'Post')][string]$Method = 'Get')
+    if ($Method -eq 'Post') { return Invoke-PnPSPRestMethod -Method Post -Url $Url -Content @{} -Connection $Connection -ErrorAction Stop }
     Invoke-PnPSPRestMethod -Url $Url -Connection $Connection -ErrorAction Stop
 }
 
 function Invoke-TarSpRequest {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Connection)
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Connection, [ValidateSet('Get', 'Post')][string]$Method = 'Get')
     for ($attempt = 1; $attempt -le $Context.MaxRetries; $attempt++) {
         try {
-            Write-TarLog "SP GET $Url ($attempt/$($Context.MaxRetries))" -Level DEBUG
+            Write-TarLog "SP $($Method.ToUpperInvariant()) $Url ($attempt/$($Context.MaxRetries))" -Level DEBUG
+            if ($Method -eq 'Post') { return Invoke-TarSpRaw -Url $Url -Connection $Connection -Method Post }
             return Invoke-TarSpRaw -Url $Url -Connection $Connection
         } catch {
             $status = Get-TarHttpStatusFromError $_
@@ -70,11 +73,86 @@ function Get-TarSpRoleAssignment {
     Get-TarSpCollection -Context $Context -Url "$SecurableUrl/$script:TarSpRoleExpand" -Connection $Connection
 }
 
+function Get-TarSpIdentityText {
+    # Pure function: e-mail, else name, else login of a SharePoint sharing principal ({email,name,loginName}).
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Principal)
+    foreach ($n in 'email', 'Email', 'name', 'Name', 'loginName', 'LoginName') {
+        $v = [string](Get-TarProperty $Principal $n)
+        if ($v) { return $v }
+    }
+    ''
+}
+
+function ConvertTo-TarSpDateText {
+    # Pure function: ISO 8601 UTC text for a REST date. JSON deserializers turn ISO strings into DateTime, and
+    # [string] on a DateTime is culture-dependent; empty or missing stays ''.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()]$Value)
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) }
+    [string]$Value
+}
+
+function ConvertTo-TarSharingLinkRecord {
+    # Pure function: GetSharingInformation response -> one record per real sharing link (ShareId set or Url set).
+    # Placeholder entries (empty GUID and no Url) describe link types that were never created and are skipped.
+    # LinkGroup is the item's 'SharingLinks.<id>.<kind>.<ShareId>' role-assignment principal, the join key to
+    # SPAssignments.csv, EffectiveSharePointAccess.csv and DriftReport.csv (DisplayName).
+    [CmdletBinding()]
+    param([AllowNull()]$SharingInformation, [Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)][string]$WebUrl,
+        [string]$ListTitle, [string]$ItemId, [string]$ObjectPath, [AllowEmptyCollection()][string[]]$LinkGroupTitles = @())
+    $info = Get-TarProperty $SharingInformation 'permissionsInformation'
+    foreach ($l in @(ConvertTo-TarArray (Get-TarProperty $info 'links'))) {
+        $d = Get-TarProperty $l 'linkDetails'
+        if ($null -eq $d) { continue }
+        $shareId = [string](Get-TarProperty $d 'ShareId')
+        $url = [string](Get-TarProperty $d 'Url')
+        if ((-not $shareId -or $shareId -eq $script:TarEmptyGuid) -and -not $url) { continue }
+        $kindValue = Get-TarProperty $d 'LinkKind'
+        $kind = if ($null -ne $kindValue -and $script:TarSharingLinkKind.ContainsKey([int]$kindValue)) { $script:TarSharingLinkKind[[int]$kindValue] } else { "Unknown($kindValue)" }
+        $access = if (Get-TarProperty $d 'IsEditLink') { 'Edit' } elseif (Get-TarProperty $d 'IsReviewLink') { 'Review' } else { 'View' }
+        $recipients = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($m in @(ConvertTo-TarArray (Get-TarProperty $l 'linkMembers'))) { $t = Get-TarSpIdentityText $m; if ($t) { $null = $recipients.Add($t) } }
+        foreach ($i in @(ConvertTo-TarArray (Get-TarProperty $d 'Invitations'))) { $t = Get-TarSpIdentityText (Get-TarProperty $i 'invitee'); if ($t) { $null = $recipients.Add($t) } }
+        # Select-Object -First 1: indexing an empty array throws under strict mode.
+        $group = [string](@($LinkGroupTitles | Where-Object { $shareId -and $_ -like "*.$shareId" }) | Select-Object -First 1)
+        [pscustomobject]@{
+            SiteUrl = $SiteUrl; WebUrl = $WebUrl; ListTitle = $ListTitle; ItemId = $ItemId; ObjectPath = $ObjectPath
+            LinkGroup = $group; ShareId = $shareId; LinkKind = $kind; Access = $access; Url = $url
+            Created = (ConvertTo-TarSpDateText (Get-TarProperty $d 'Created')); CreatedBy = (Get-TarSpIdentityText (Get-TarProperty $d 'CreatedBy'))
+            LastModified = (ConvertTo-TarSpDateText (Get-TarProperty $d 'LastModified')); LastModifiedBy = (Get-TarSpIdentityText (Get-TarProperty $d 'LastModifiedBy'))
+            Expiration = (ConvertTo-TarSpDateText (Get-TarProperty $d 'Expiration')); RequiresPassword = [bool](Get-TarProperty $d 'RequiresPassword')
+            BlocksDownload = [bool](Get-TarProperty $d 'BlocksDownload'); HasExternalGuestInvitees = [bool](Get-TarProperty $d 'HasExternalGuestInvitees')
+            Recipients = (@($recipients) -join ';')
+        }
+    }
+}
+
+function Get-TarSpItemSharingLink {
+    # Sharing links of ONE list item or folder via GetSharingInformation (POST, read-only). Best effort: a failure
+    # is logged and recorded in Errors.csv; the role assignments of the item are already captured.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)]$Connection, [Parameter(Mandatory)][string]$ListUrl,
+        [Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)][string]$WebUrl, [string]$ListTitle, [Parameter(Mandatory)][string]$ItemId,
+        [string]$ObjectPath, [AllowEmptyCollection()][string[]]$LinkGroupTitles = @())
+    try {
+        $info = Invoke-TarSpRequest -Context $Context -Connection $Connection -Method Post -Url "$ListUrl/items($ItemId)/GetSharingInformation?`$expand=permissionsInformation"
+        ConvertTo-TarSharingLinkRecord -SharingInformation $info -SiteUrl $SiteUrl -WebUrl $WebUrl -ListTitle $ListTitle -ItemId $ItemId -ObjectPath $ObjectPath -LinkGroupTitles $LinkGroupTitles
+    } catch {
+        Write-TarLog "    Sharing links unavailable for $ObjectPath ($($_.Exception.Message))" -Level WARN
+        Add-TarErrorRecord -Context $Context -Stage 'SPSharingLinks' -Target "$WebUrl :: $ObjectPath" -Message $_.Exception.Message
+    }
+}
+
 function Invoke-TarSpWebScan {
     # Web -> lists -> items (5000/page) -> subwebs (recursive). Emits assignment records to the pipeline.
+    # Items whose role assignments include a 'SharingLinks.*' group also get their link details added to $LinkSink.
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$SiteUrl, [Parameter(Mandatory)][string]$WebUrl,
-        [Parameter(Mandatory)]$Connection, [int]$Depth = 0)
+        [Parameter(Mandatory)]$Connection, [int]$Depth = 0, [System.Collections.Generic.List[object]]$LinkSink)
     $web = Invoke-TarSpRequest -Context $Context -Url "$WebUrl/_api/web?`$select=Url,HasUniqueRoleAssignments" -Connection $Connection
     if ($Depth -eq 0 -or (Get-TarProperty $web 'HasUniqueRoleAssignments')) {
         Get-TarSpRoleAssignment -Context $Context -SecurableUrl "$WebUrl/_api/web" -Connection $Connection |
@@ -98,8 +176,15 @@ function Invoke-TarSpWebScan {
             Write-TarLog "    List '$title': $($items.Count) items, $($unique.Count) with unique permissions"
             foreach ($it in $unique) {
                 $itemId = [string](Get-TarProperty $it 'Id')
-                Get-TarSpRoleAssignment -Context $Context -SecurableUrl "$listUrl/items($itemId)" -Connection $Connection |
-                    ConvertTo-TarSpAssignmentRecord -SiteUrl $SiteUrl -WebUrl $WebUrl -Scope 'Item' -ObjectPath (Get-TarProperty $it 'FileRef') -ListTitle $title -ItemId $itemId
+                $fileRef = [string](Get-TarProperty $it 'FileRef')
+                $itemRecords = @(Get-TarSpRoleAssignment -Context $Context -SecurableUrl "$listUrl/items($itemId)" -Connection $Connection |
+                        ConvertTo-TarSpAssignmentRecord -SiteUrl $SiteUrl -WebUrl $WebUrl -Scope 'Item' -ObjectPath $fileRef -ListTitle $title -ItemId $itemId)
+                foreach ($rec in $itemRecords) { $rec }   # emit elements, not the array (pipeline contract)
+                $linkGroups = [string[]]@($itemRecords | Where-Object { [string]$_.PrincipalTitle -match '^SharingLinks\.' } | ForEach-Object { [string]$_.PrincipalTitle })
+                if ($null -ne $LinkSink -and $linkGroups.Count -gt 0) {
+                    foreach ($link in @(Get-TarSpItemSharingLink -Context $Context -Connection $Connection -ListUrl $listUrl -SiteUrl $SiteUrl -WebUrl $WebUrl `
+                                -ListTitle $title -ItemId $itemId -ObjectPath $fileRef -LinkGroupTitles $linkGroups)) { $LinkSink.Add($link) }
+                }
             }
         } catch {
             Write-TarLog "    List '$title' failed: $($_.Exception.Message)" -Level ERROR
@@ -110,7 +195,7 @@ function Invoke-TarSpWebScan {
     foreach ($s in @(Get-TarSpCollection -Context $Context -Url "$WebUrl/_api/web/webs?`$select=Url" -Connection $Connection)) {
         $sub = Get-TarProperty $s 'Url'
         Write-TarLog "    Subweb (depth $($Depth + 1)): $sub"
-        Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $sub -Connection $Connection -Depth ($Depth + 1)
+        Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $sub -Connection $Connection -Depth ($Depth + 1) -LinkSink $LinkSink
     }
 }
 
@@ -156,14 +241,15 @@ function Invoke-TarSpSiteScan {
         }
     }
     $associated = Get-TarSpAssociatedGroup -Context $Context -SiteUrl $SiteUrl -Connection $Connection
-    foreach ($r in @(Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $SiteUrl -Connection $Connection)) {
+    $links = [System.Collections.Generic.List[object]]::new()
+    foreach ($r in @(Invoke-TarSpWebScan -Context $Context -SiteUrl $SiteUrl -WebUrl $SiteUrl -Connection $Connection -LinkSink $links)) {
         # Associated groups are defined per web; only tag root-web assignments to SharePoint groups.
         if ($r.Scope -eq 'Web' -and [string]$r.PrincipalType -eq '8' -and $r.WebUrl -eq $SiteUrl -and $associated.ContainsKey([string]$r.PrincipalTitle)) {
             $r.AssociatedGroup = $associated[[string]$r.PrincipalTitle]
         }
         $records.Add($r)
     }
-    [pscustomobject]@{ Assignments = $records; GroupMembers = $memberships; GroupCount = $groups.Count }
+    [pscustomobject]@{ Assignments = $records; GroupMembers = $memberships; GroupCount = $groups.Count; SharingLinks = $links }
 }
 
 function Connect-TarSpSite {
@@ -209,8 +295,10 @@ function Invoke-TarSharePointScan {
             $result = Invoke-TarSpSiteScan -Context $Context -SiteUrl $site -Connection $conn
             Write-TarRecord -Context $Context -Name $script:TarFile.SpAssignments -InputObject $result.Assignments
             Write-TarRecord -Context $Context -Name $script:TarFile.SpGroupMembers -InputObject $result.GroupMembers
+            $links = @(Get-TarProperty $result 'SharingLinks')
+            Write-TarRecord -Context $Context -Name $script:TarFile.SharingLinks -InputObject $links
             Add-TarCheckpoint -Context $Context -Name $script:TarCheckpoint.SharePoint -Key $site
-            Write-TarLog "    Done: $($result.Assignments.Count) role assignments, $($result.GroupCount) groups, $($result.GroupMembers.Count) group memberships"
+            Write-TarLog "    Done: $($result.Assignments.Count) role assignments, $($result.GroupCount) groups, $($result.GroupMembers.Count) group memberships, $($links.Count) sharing links"
         } catch {
             Write-TarLog "    Site failed: $($_.Exception.Message)" -Level ERROR
             Add-TarErrorRecord -Context $Context -Stage 'SPSite' -Target $site -Message $_.Exception.Message

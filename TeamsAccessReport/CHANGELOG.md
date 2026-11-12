@@ -1,5 +1,20 @@
 ﻿# Changelog
 
+## 2.8.0 – 2026-11-12
+### Added
+- `SharingLinks.csv` (with `-IncludeSharePoint`): one row per sharing link on an item or folder – URL, link kind
+  (`OrganizationView/Edit`, `AnonymousView/Edit`, `Flexible`, `Direct`), access (View/Edit/Review), created and last
+  modified (date and by whom), expiration, password and block-download flags, external guest invitees and recipients.
+  Collected with SharePoint `GetSharingInformation` only for items whose role assignments contain a `SharingLinks.*`
+  group, so no extra calls for other items and no new permissions. `LinkGroup` joins each link to the
+  `OrganizationLink`/`AnonymousLink` rows in `DriftReport.csv` (`DisplayName`). A failing item is logged and recorded
+  in `Errors.csv` (`SPSharingLinks`) without stopping the site. Dates are written as ISO 8601 UTC.
+- The worker log line per site adds the number of sharing links.
+
+### Notes
+- The file contains working links; anonymous URLs give access without sign-in. Treat the output folder as a secret.
+- `-Resume` of a folder from 2.7.x: sites scanned before the upgrade have no rows in `SharingLinks.csv`.
+
 ## 2.7.0 – 2026-11-12
 ### Added
 - Drift finding `InternalUserAlsoGuest` (Medium): a guest whose display name matches an internal account with access

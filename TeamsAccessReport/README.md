@@ -109,7 +109,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 
 | Rule | Why |
 |---|---|
-| The report only reads (GET); the only writes are in `Provisioning.ps1` (`New-TeamsAccessReportApp`) through `Invoke-TarGraphWriteRaw` | The read-only guarantee is checkable in one place |
+| The report only reads. Every request is GET except SharePoint `GetSharingInformation`, a read that SharePoint only accepts as POST (`Invoke-TarSpRaw -Method Post`). The only writes are in `Provisioning.ps1` (`New-TeamsAccessReportApp`) through `Invoke-TarGraphWriteRaw` | The read-only guarantee is checkable in one place |
 | All Graph IO goes through `Invoke-TarGraphRaw`; all SharePoint IO through `Invoke-TarSpRaw`; tenant discovery through `Invoke-TarHttpRaw` | One seam per external service; tests mock only these |
 | No script-scope variables in logic; everything flows through `-Context` | Explicit dependencies, testable, PSScriptAnalyzer can verify parameter usage |
 | Phases communicate only through the files defined in `Constants.ps1` (`$script:TarFile`) | Each phase can be re-run or resumed in isolation; the files are a data contract |
@@ -141,6 +141,7 @@ Shared: Constants.ps1 (data contract), Store.ps1 (CSV store, checkpoints), Util.
 | `IncomingSharedChannels.csv` | TeamId, ChannelId | Shared channels from other teams/tenants, `CrossTenant` |
 | `SPAssignments.csv` | SiteUrl, Scope, ObjectPath | Raw role assignments (SiteCollectionAdmin/Web/List/Item); `AssociatedGroup` = Owner/Member/Visitor for the site's default groups |
 | `SPGroupMembers.csv` | SiteUrl, GroupTitle | Members of each SharePoint group |
+| `SharingLinks.csv` | SiteUrl, ObjectPath, ShareId | One row per sharing link on an item or folder: `LinkKind`, `Access` (View/Edit/Review), `Url`, `Created`/`CreatedBy`, `LastModified`/`LastModifiedBy`, `Expiration`, `RequiresPassword`, `BlocksDownload`, `HasExternalGuestInvitees`, `Recipients`; `LinkGroup` joins to `DriftReport.csv` `DisplayName` (see below) |
 | `EffectiveSharePointAccess.csv` | SiteUrl, UserId | Resolved access with `ExpansionPath` |
 | `DriftReport.csv` | SiteUrl, Finding, UserId | Drift findings, `Severity` High/Medium/Low/Info, `Cause` (see below) |
 | `ExternalAssociations.csv` | UserId, HostTenantId | Internal users' teams in other tenants (`-IncludeUserAssociations`) |
@@ -165,6 +166,24 @@ Access only cover one of them. Names are compared without case, diacritics or th
 two words (`gisela.zinn` matches `Gisela Zinn`; `admin` matches nothing). A name match is a lead, not proof: the row is
 the guest; `ExpansionPath` names the internal account(s) (`NameMatch > Internal:<upn> (<id>)`) and `Scope` lists where the
 guest has access (`Teams:Team`, `SharePoint:Web`, ...). Verify in Entra before removing either account.
+
+### Sharing links
+
+`SharingLinks.csv` lists the actual links behind the `SharingLinks.*` groups. For every item or folder whose role
+assignments contain such a group, phase 2 calls SharePoint `GetSharingInformation` (`$expand=permissionsInformation`),
+documented in [MS-CSOMSPT SharingInformation](https://learn.microsoft.com/en-us/openspecs/sharepoint_protocols/ms-csomspt/159d6427-e2b0-440f-bdf0-a6368ee72edd).
+It needs no extra permission (the existing SharePoint Full Control) and, unlike Graph `driveItem/permissions`, returns
+creator and creation date. Graph also returns link URLs only to callers that may create the link
+([List permissions](https://learn.microsoft.com/en-us/graph/api/driveitem-list-permissions?view=graph-rest-1.0)).
+
+- `LinkKind` is SharePoint's `SharingLinkKind`: `Direct`, `OrganizationView`, `OrganizationEdit`, `AnonymousView`,
+  `AnonymousEdit`, `Flexible` (specific people) ([SharingLinkKind](https://learn.microsoft.com/en-us/dotnet/api/microsoft.sharepoint.client.sharinglinkkind?view=sharepoint-csom)).
+- Placeholder entries (empty `ShareId` and no `Url`, i.e. link types never created) are skipped.
+- `LinkGroup` is the item's `SharingLinks.<id>.<kind>.<ShareId>` principal; filter `DriftReport.csv` on
+  `DisplayName = LinkGroup` to get the URL and creator of an `OrganizationLink`/`AnonymousLink` finding.
+- A failure on one item is logged (WARN) and written to `Errors.csv` (`SPSharingLinks`); the scan continues.
+- **The file contains working links.** An `Anonymous*` URL gives anyone who has it access without signing in. Store
+  and share the output folder like credentials.
 
 ## Development
 
