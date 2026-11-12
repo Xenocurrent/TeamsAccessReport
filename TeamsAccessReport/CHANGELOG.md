@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 2.8.1 – 2026-11-12
+### Documentation
+- README brought up to date with 2.5–2.8: requirements (PowerShell 7.2+/7.4.6+ for the worker, PnP.PowerShell 3.0+,
+  tested on 7.7), feature summary, setup statuses (`Cancelled`, `Skipped`) and the WAM window note, `SharingLinks.csv`
+  in the architecture diagram, a full table of drift findings and severities, the extended `PublicTeamDefault` rule,
+  empty `Upn` for link findings, and known limitations (verified in a real tenant; per-site delegated sign-in removed,
+  fixed in 2.5.1; open points for sharing-link URLs and `InternalUserAlsoGuest` scope).
+- `New-TeamsAccessReportApp` help lists all statuses.
+
 ## 2.8.0 – 2026-11-12
 ### Added
 - `SharingLinks.csv` (with `-IncludeSharePoint`): one row per sharing link on an item or folder – URL, link kind
