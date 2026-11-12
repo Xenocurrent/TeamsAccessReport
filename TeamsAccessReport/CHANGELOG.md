@@ -1,5 +1,13 @@
 ﻿# Changelog
 
+## 2.7.0 – 2026-11-12
+### Added
+- Drift finding `InternalUserAlsoGuest` (Medium): a guest whose display name matches an internal account with access
+  to the same site or team. Names are normalised (case, diacritics, `. _ -`, whitespace) and must have at least two
+  words. The row is the guest; `ExpansionPath` names the internal counterpart(s), `Scope` lists the guest's Teams and
+  SharePoint access. Uses data already collected; no new permissions or API calls. In a real-tenant run it found the
+  one known dual identity on both affected sites and nothing for the seven other guests.
+
 ## 2.6.1 – 2026-11-12
 ### Fixed
 - PowerShell 7.7: every CSV write printed "Parameter 'NoTypeInformation' is obsolete". `-NoTypeInformation` has been

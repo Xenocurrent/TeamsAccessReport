@@ -159,6 +159,13 @@ Severity is not lowered by a cause – the access is real, the cause only tells 
 |---|---|
 | `PublicTeamDefault` | "Everyone except external users" in the associated Members group of a **public** team site. Microsoft adds it automatically; making the team private removes it. All conditions must hold (team site, public, root web, associated Members group), so a manually added grant is never attributed to the default. |
 
+`InternalUserAlsoGuest` (Medium) flags a guest whose display name matches an internal account that has access to the
+**same** site or team – typically one person with both an internal and a guest account, so offboarding and Conditional
+Access only cover one of them. Names are compared without case, diacritics or the separators `. _ -` and need at least
+two words (`gisela.zinn` matches `Gisela Zinn`; `admin` matches nothing). A name match is a lead, not proof: the row is
+the guest; `ExpansionPath` names the internal account(s) (`NameMatch > Internal:<upn> (<id>)`) and `Scope` lists where the
+guest has access (`Teams:Team`, `SharePoint:Web`, ...). Verify in Entra before removing either account.
+
 ## Development
 
 ```powershell
